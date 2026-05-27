@@ -1,0 +1,101 @@
+name: Deploy to Coolify
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "Deploy action"
+        required: true
+        default: "redeploy"
+        type: choice
+        options:
+          - redeploy
+          - fresh-deploy
+
+jobs:
+  deploy:
+    name: Deploy WS Broker
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js (frontend build test)
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install & Build Frontend
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+        # Build başarılıysa deploy'a geç — hatalı build'i Coolify'a gönderme
+
+      - name: Deploy to Coolify (Fresh)
+        if: github.event.inputs.action == 'fresh-deploy' || github.event_name == 'push'
+        env:
+          COOLIFY_URL: ${{ secrets.COOLIFY_URL }}
+          COOLIFY_TOKEN: ${{ secrets.COOLIFY_TOKEN }}
+          COOLIFY_SERVER: ${{ secrets.COOLIFY_SERVER }}
+          COOLIFY_PROJECT: ${{ secrets.COOLIFY_PROJECT }}
+          JWT_SECRET: ${{ secrets.JWT_SECRET }}
+          API_KEY: ${{ secrets.API_KEY }}
+          ADMIN_PASSWORD: ${{ secrets.ADMIN_PASSWORD }}
+        run: |
+          # Coolify API ile deploy
+          COMPOSE_B64=$(cat docker-compose.yml | \
+            sed "s|degistir-bunu-uzun-rastgele-string|$JWT_SECRET|g" | \
+            sed "s|api-key-buraya|$API_KEY|g" | \
+            sed "s|admin123|$ADMIN_PASSWORD|g" | \
+            base64 -w 0)
+
+          COOLIFY_URL="${COOLIFY_URL%/}"
+
+          # Servis oluştur
+          RESPONSE=$(curl -sf -X POST \
+            "$COOLIFY_URL/api/v1/services" \
+            -H "Authorization: Bearer $COOLIFY_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"server_uuid\": \"$COOLIFY_SERVER\",
+              \"project_uuid\": \"$COOLIFY_PROJECT\",
+              \"environment_name\": \"production\",
+              \"name\": \"ws-broker\",
+              \"description\": \"WebSocket Broker\",
+              \"docker_compose_raw\": \"$COMPOSE_B64\",
+              \"instant_deploy\": true
+            }")
+
+          UUID=$(echo "$RESPONSE" | jq -r '.uuid')
+          echo "Service UUID: $UUID"
+          echo "SERVICE_UUID=$UUID" >> $GITHUB_ENV
+
+      - name: Redeploy to Coolify (Restart)
+        if: github.event.inputs.action == 'redeploy' && github.event_name == 'workflow_dispatch'
+        env:
+          COOLIFY_URL: ${{ secrets.COOLIFY_URL }}
+          COOLIFY_TOKEN: ${{ secrets.COOLIFY_TOKEN }}
+          COOLIFY_SERVICE_UUID: ${{ secrets.COOLIFY_SERVICE_UUID }}
+        run: |
+          COOLIFY_URL="${COOLIFY_URL%/}"
+          curl -sf -X GET \
+            "$COOLIFY_URL/api/v1/services/$COOLIFY_SERVICE_UUID/restart" \
+            -H "Authorization: Bearer $COOLIFY_TOKEN"
+          echo "Restart tetiklendi: $COOLIFY_SERVICE_UUID"
+
+      - name: Deployment Summary
+        run: |
+          echo "## Deploy Tamamlandı ✅" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Alan | Değer |" >> $GITHUB_STEP_SUMMARY
+          echo "|------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Commit | ${{ github.sha }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Branch | ${{ github.ref_name }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Tetikleyen | ${{ github.actor }} |" >> $GITHUB_STEP_SUMMARY
+          [[ -n "${SERVICE_UUID:-}" ]] && echo "| Servis UUID | $SERVICE_UUID |" >> $GITHUB_STEP_SUMMARY || true

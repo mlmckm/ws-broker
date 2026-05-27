@@ -1,0 +1,34 @@
+services:
+  ws-broker:
+    build: .
+    ports:
+      - "8883:8883"
+    environment:
+      - PORT=8883
+      - JWT_SECRET=degistir-bunu-uzun-rastgele-string
+      - API_KEY=api-key-buraya
+      - ADMIN_PASSWORD=admin123
+      - DATABASE_URL=postgresql://broker:broker_pass@postgres:5432/brokerdb
+      - NODE_ENV=production
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      - POSTGRES_USER=broker
+      - POSTGRES_PASSWORD=broker_pass
+      - POSTGRES_DB=brokerdb
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U broker -d brokerdb"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
