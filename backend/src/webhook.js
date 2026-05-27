@@ -12,15 +12,41 @@ async function loadWebhookCache() {
 }
 
 async function triggerWebhooks(topic, payload, payloadType, senderUsername, senderClientId) {
-  const matches = webhookCache.filter(wh => topicMatchesPattern(topic, wh.topic_pattern));
+  const matches = webhookCache.filter(wh =>
+    (wh.trigger_on === 'message' || !wh.trigger_on) && wh.topic_pattern &&
+    topicMatchesPattern(topic, wh.topic_pattern)
+  );
   for (const webhook of matches) {
     fireWebhook(webhook, { topic, payload, payloadType, senderUsername, senderClientId }).catch(() => {});
   }
 }
 
-async function fireWebhook(webhook, { topic, payload, payloadType, senderUsername, senderClientId }, attempt = 1) {
+async function triggerEventWebhooks(event, clientData) {
+  // 'client_connect' or 'client_disconnect'
+  const matches = webhookCache.filter(wh => wh.trigger_on === event);
+  for (const webhook of matches) {
+    const delayMs = (parseInt(webhook.delay_seconds) || 0) * 1000;
+    const fire = () => fireWebhook(webhook, {
+      topic: null,
+      payload: JSON.stringify(clientData),
+      payloadType: 'json',
+      senderUsername: clientData.username || null,
+      senderClientId: clientData.client_id || null,
+      eventType: event,
+    }).catch(() => {});
+
+    if (delayMs > 0) {
+      setTimeout(fire, delayMs);
+    } else {
+      fire();
+    }
+  }
+}
+
+async function fireWebhook(webhook, { topic, payload, payloadType, senderUsername, senderClientId, eventType }, attempt = 1) {
   const body = {
-    topic,
+    event: eventType || 'message',
+    topic: topic || undefined,
     payload,
     payload_type: payloadType,
     sender_username: senderUsername,
@@ -90,4 +116,4 @@ async function fireWebhook(webhook, { topic, payload, payloadType, senderUsernam
   console.log(`[${new Date().toISOString()}] [WEBHOOK] ${webhook.name} → ${statusCode} (${duration}ms) attempt=${attempt}`);
 }
 
-module.exports = { loadWebhookCache, triggerWebhooks };
+module.exports = { loadWebhookCache, triggerWebhooks, triggerEventWebhooks };

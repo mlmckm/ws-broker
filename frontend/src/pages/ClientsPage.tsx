@@ -18,13 +18,26 @@ import { toast } from '@/hooks/use-toast'
 import { formatBytes } from '@/lib/utils'
 
 export default function ClientsPage() {
-  const { clients } = useBrokerStore()
+  const { clients, setClients } = useBrokerStore()
   const { isAdmin } = useAuthStore()
   const [search, setSearch] = useState('')
   const [selected, setSelected] = useState<ActiveClient | null>(null)
   const [history, setHistory] = useState<unknown[]>([])
   const [historyTotal, setHistoryTotal] = useState(0)
   const [page, setPage] = useState(0)
+
+  // Refresh active clients from API every 5s
+  useEffect(() => {
+    const refresh = async () => {
+      try {
+        const res = await api.get('/clients')
+        setClients(res.data.clients)
+      } catch {}
+    }
+    refresh()
+    const t = setInterval(refresh, 5000)
+    return () => clearInterval(t)
+  }, [])
 
   const filtered = clients.filter(c =>
     c.username.toLowerCase().includes(search.toLowerCase()) ||

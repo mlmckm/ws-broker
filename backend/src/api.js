@@ -331,14 +331,20 @@ router.get('/webhooks', authMiddleware, requireAdminOrViewer, async (req, res) =
 
 router.post('/webhooks', authMiddleware, requireAdmin, async (req, res) => {
   const ip = req.headers['x-forwarded-for']?.split(',')[0].trim() || req.socket.remoteAddress;
-  const { name, topic_pattern, url, method = 'POST', headers = {}, secret, retry_count = 3, timeout_ms = 5000 } = req.body;
+  const { name, topic_pattern, url, method = 'POST', headers = {}, secret,
+          retry_count = 3, timeout_ms = 5000, trigger_on = 'message', delay_seconds = 0 } = req.body;
 
-  if (!name || !topic_pattern || !url) return res.status(400).json({ error: 'name, topic_pattern ve url gerekli' });
+  if (!name || !url) return res.status(400).json({ error: 'name ve url gerekli' });
+  if (!['message', 'client_connect', 'client_disconnect'].includes(trigger_on))
+    return res.status(400).json({ error: 'Geçersiz trigger_on değeri' });
+  if (trigger_on === 'message' && !topic_pattern)
+    return res.status(400).json({ error: 'message tipinde topic_pattern gerekli' });
 
   const result = await pool.query(
-    `INSERT INTO webhooks (name, topic_pattern, url, method, headers, secret, retry_count, timeout_ms)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
-    [name, topic_pattern, url, method, JSON.stringify(headers), secret || null, retry_count, timeout_ms]
+    `INSERT INTO webhooks (name, topic_pattern, url, method, headers, secret, retry_count, timeout_ms, trigger_on, delay_seconds)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *`,
+    [name, topic_pattern || null, url, method, JSON.stringify(headers), secret || null,
+     retry_count, timeout_ms, trigger_on, delay_seconds]
   );
   await loadWebhookCache();
   await writeAudit({ actor: req.user.username, action: 'webhook.create', targetType: 'webhook', targetId: result.rows[0].id, ip });
@@ -348,12 +354,14 @@ router.post('/webhooks', authMiddleware, requireAdmin, async (req, res) => {
 router.put('/webhooks/:id', authMiddleware, requireAdmin, async (req, res) => {
   const ip = req.headers['x-forwarded-for']?.split(',')[0].trim() || req.socket.remoteAddress;
   const { id } = req.params;
-  const { name, topic_pattern, url, method, headers, secret, retry_count, timeout_ms } = req.body;
+  const { name, topic_pattern, url, method, headers, secret, retry_count, timeout_ms,
+          trigger_on = 'message', delay_seconds = 0 } = req.body;
 
   const result = await pool.query(
     `UPDATE webhooks SET name=$1, topic_pattern=$2, url=$3, method=$4, headers=$5, secret=$6,
-     retry_count=$7, timeout_ms=$8 WHERE id=$9 RETURNING *`,
-    [name, topic_pattern, url, method, JSON.stringify(headers || {}), secret || null, retry_count, timeout_ms, id]
+     retry_count=$7, timeout_ms=$8, trigger_on=$9, delay_seconds=$10 WHERE id=$11 RETURNING *`,
+    [name, topic_pattern || null, url, method, JSON.stringify(headers || {}), secret || null,
+     retry_count, timeout_ms, trigger_on, delay_seconds, id]
   );
   if (!result.rows.length) return res.status(404).json({ error: 'Webhook bulunamadı' });
   await loadWebhookCache();

@@ -2,7 +2,7 @@ const { v4: uuidv4 } = require('uuid');
 const { pool, getSetting } = require('./db');
 const { verifyPassword, signToken } = require('./auth');
 const { checkAcl, topicMatchesPattern } = require('./acl');
-const { triggerWebhooks } = require('./webhook');
+const { triggerWebhooks, triggerEventWebhooks } = require('./webhook');
 
 // clientId -> { ws, username, role, clientId, connectedAt, ip, userAgent, subscriptions, messageCount, bytesSent, bytesReceived, authenticated, pingTimer, sessionId, rateLimitTokens, rateLimitLast }
 const clients = new Map();
@@ -205,17 +205,26 @@ async function handleAuth(client, msg) {
   // Start ping
   startPing(client);
 
-  // Notify dashboard
-  publishSys('$SYS/clients/connected', {
+  const connectedPayload = {
     client_id: client.clientId,
     username,
     ip: client.ip,
-  });
+    connected_at: new Date().toISOString(),
+  };
+
+  // Notify dashboard
+  publishSys('$SYS/clients/connected', connectedPayload);
+
+  // Trigger connect webhooks
+  triggerEventWebhooks('client_connect', connectedPayload).catch(() => {});
 }
 
-function startPing(client) {
-  const PING_INTERVAL = 30000;
-  const PONG_TIMEOUT = 10000;
+async function startPing(client) {
+  // Read from settings — allows runtime tuning without restart
+  const intervalMs = parseInt(await getSetting('ws_ping_interval') || '30000');
+  const timeoutMs  = parseInt(await getSetting('ws_ping_timeout')  || '60000');
+  const PING_INTERVAL = intervalMs;
+  const PONG_TIMEOUT  = timeoutMs;
 
   // Track active pong timer to cancel it on disconnect/reconnect
   let pongTimer = null;
@@ -437,10 +446,17 @@ function handleDisconnect(client) {
   }
 
   if (client.authenticated) {
-    publishSys('$SYS/clients/disconnected', {
+    const disconnectedPayload = {
       client_id: client.clientId,
       username: client.username,
-    });
+      connected_at: client.connectedAt?.toISOString?.() || null,
+      disconnected_at: new Date().toISOString(),
+    };
+
+    publishSys('$SYS/clients/disconnected', disconnectedPayload);
+
+    // Trigger disconnect webhooks (supports delay_seconds)
+    triggerEventWebhooks('client_disconnect', disconnectedPayload).catch(() => {});
   }
 
   log(`Client disconnected: ${client.clientId} (${client.username || 'unauthenticated'})`);

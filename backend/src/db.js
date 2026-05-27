@@ -59,7 +59,7 @@ async function migrate() {
       CREATE TABLE IF NOT EXISTS webhooks (
         id SERIAL PRIMARY KEY,
         name VARCHAR(100) NOT NULL,
-        topic_pattern VARCHAR(500) NOT NULL,
+        topic_pattern VARCHAR(500),
         url TEXT NOT NULL,
         method VARCHAR(10) DEFAULT 'POST',
         headers JSONB DEFAULT '{}',
@@ -67,12 +67,19 @@ async function migrate() {
         active BOOLEAN DEFAULT TRUE,
         retry_count INTEGER DEFAULT 3,
         timeout_ms INTEGER DEFAULT 5000,
+        trigger_on VARCHAR(30) DEFAULT 'message',
+        delay_seconds INTEGER DEFAULT 0,
         created_at TIMESTAMPTZ DEFAULT NOW(),
         last_triggered_at TIMESTAMPTZ,
         last_status_code INTEGER,
         total_triggers INTEGER DEFAULT 0,
         failed_triggers INTEGER DEFAULT 0
       );
+
+      -- Add new columns if upgrading existing table
+      ALTER TABLE webhooks ADD COLUMN IF NOT EXISTS trigger_on VARCHAR(30) DEFAULT 'message';
+      ALTER TABLE webhooks ADD COLUMN IF NOT EXISTS delay_seconds INTEGER DEFAULT 0;
+      ALTER TABLE webhooks ALTER COLUMN topic_pattern DROP NOT NULL;
 
       CREATE TABLE IF NOT EXISTS webhook_logs (
         id SERIAL PRIMARY KEY,
@@ -114,10 +121,10 @@ async function migrate() {
     `);
 
     await client.query(`
-      INSERT INTO settings (key, value) VALUES
-        ('max_messages_stored', '10000'),
-        ('ws_ping_interval', '30000'),
-        ('ws_ping_timeout', '10000'),
+  INSERT INTO settings (key, value) VALUES
+  ('max_messages_stored', '10000'),
+  ('ws_ping_interval', '30000'),
+  ('ws_ping_timeout', '60000'),
         ('max_connections_per_user', '10'),
         ('max_payload_size_kb', '256'),
         ('rate_limit_messages_per_second', '100'),

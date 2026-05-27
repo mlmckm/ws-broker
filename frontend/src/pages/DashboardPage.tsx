@@ -14,9 +14,26 @@ import { formatUptime } from '@/lib/utils'
 type Period = '1h' | '6h' | '24h'
 
 export default function DashboardPage() {
-  const { stats, clients } = useBrokerStore()
+  const { stats, clients, setClients, setStats } = useBrokerStore()
   const [chartData, setChartData] = useState<Array<{ time: string; count: number }>>([])
   const [period, setPeriod] = useState<Period>('1h')
+
+  // Load active clients and stats on mount (in case WS events were missed)
+  useEffect(() => {
+    const bootstrap = async () => {
+      try {
+        const [clientRes, statsRes] = await Promise.all([
+          api.get('/clients'),
+          api.get('/stats'),
+        ])
+        setClients(clientRes.data.clients)
+        setStats(statsRes.data)
+      } catch {}
+    }
+    bootstrap()
+    const refreshTimer = setInterval(bootstrap, 10000)
+    return () => clearInterval(refreshTimer)
+  }, [])
 
   useEffect(() => {
     fetchChart()

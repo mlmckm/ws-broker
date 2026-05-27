@@ -18,7 +18,9 @@ import { toast } from '@/hooks/use-toast'
 interface Webhook {
   id: number
   name: string
-  topic_pattern: string
+  topic_pattern: string | null
+  trigger_on: 'message' | 'client_connect' | 'client_disconnect'
+  delay_seconds: number
   url: string
   method: string
   active: boolean
@@ -41,7 +43,7 @@ interface WebhookLog {
   response_body: string
 }
 
-const emptyForm = { name: '', topic_pattern: '', url: '', method: 'POST', headers: '{}', secret: '', retry_count: 3, timeout_ms: 5000 }
+const emptyForm = { name: '', topic_pattern: '', trigger_on: 'message', delay_seconds: 0, url: '', method: 'POST', headers: '{}', secret: '', retry_count: 3, timeout_ms: 5000 }
 
 export default function WebhooksPage() {
   const { isAdmin } = useAuthStore()
@@ -73,7 +75,8 @@ export default function WebhooksPage() {
   const openEdit = (wh: Webhook) => {
     setEditing(wh)
     setForm({
-      name: wh.name, topic_pattern: wh.topic_pattern, url: wh.url, method: wh.method,
+      name: wh.name, topic_pattern: wh.topic_pattern || '', trigger_on: wh.trigger_on || 'message',
+      delay_seconds: wh.delay_seconds || 0, url: wh.url, method: wh.method,
       headers: JSON.stringify(wh.headers || {}, null, 2), secret: wh.secret || '',
       retry_count: wh.retry_count, timeout_ms: wh.timeout_ms,
     })
@@ -84,7 +87,12 @@ export default function WebhooksPage() {
     try {
       let headers = {}
       try { headers = JSON.parse(form.headers) } catch {}
-      const data = { ...form, headers, secret: form.secret || undefined }
+      const data = {
+        ...form,
+        headers,
+        secret: form.secret || undefined,
+        topic_pattern: form.trigger_on === 'message' ? form.topic_pattern : null,
+      }
       if (editing) await api.put(`/webhooks/${editing.id}`, data)
       else await api.post('/webhooks', data)
       toast({ title: editing ? 'Webhook güncellendi' : 'Webhook eklendi' })
@@ -168,7 +176,12 @@ export default function WebhooksPage() {
                     <td className="p-3 font-medium cursor-pointer" onClick={() => { setSelected(wh); fetchLogs(wh.id) }}>
                       {wh.name}
                     </td>
-                    <td className="p-3 font-mono text-xs">{wh.topic_pattern}</td>
+                    <td className="p-3 font-mono text-xs">
+                      {wh.trigger_on === 'message' ? wh.topic_pattern :
+                       wh.trigger_on === 'client_connect' ? '🔌 Bağlandı' :
+                       wh.trigger_on === 'client_disconnect' ? `🔴 Ayrıldı${wh.delay_seconds ? ` (+${wh.delay_seconds}s)` : ''}` :
+                       wh.topic_pattern}
+                    </td>
                     <td className="p-3 text-xs text-muted-foreground hidden md:table-cell max-w-[200px] truncate">{wh.url}</td>
                     <td className="p-3 hidden lg:table-cell">
                       <span>{wh.total_triggers}</span>
@@ -228,7 +241,27 @@ export default function WebhooksPage() {
           <DialogHeader><DialogTitle>{editing ? 'Webhook Düzenle' : 'Yeni Webhook'}</DialogTitle></DialogHeader>
           <div className="space-y-3 max-h-[70vh] overflow-y-auto pr-1">
             <div className="space-y-2"><Label>İsim</Label><Input value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} /></div>
-            <div className="space-y-2"><Label>Topic Pattern</Label><Input value={form.topic_pattern} onChange={e => setForm(f => ({ ...f, topic_pattern: e.target.value }))} placeholder="ev/+/sicaklik" /></div>
+            <div className="space-y-2">
+              <Label>Tetikleyici</Label>
+              <Select value={form.trigger_on} onValueChange={v => setForm(f => ({ ...f, trigger_on: v }))}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="message">📨 Topic Mesajı</SelectItem>
+                  <SelectItem value="client_connect">🔌 Client Bağlandı</SelectItem>
+                  <SelectItem value="client_disconnect">🔴 Client Ayrıldı</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            {form.trigger_on === 'message' && (
+              <div className="space-y-2"><Label>Topic Pattern</Label><Input value={form.topic_pattern} onChange={e => setForm(f => ({ ...f, topic_pattern: e.target.value }))} placeholder="ev/+/sicaklik" /></div>
+            )}
+            {form.trigger_on === 'client_disconnect' && (
+              <div className="space-y-2">
+                <Label>Gecikme (saniye) — 0 = anında</Label>
+                <Input type="number" min={0} value={form.delay_seconds} onChange={e => setForm(f => ({ ...f, delay_seconds: parseInt(e.target.value) || 0 }))} placeholder="0" />
+                <p className="text-xs text-muted-foreground">Client disconnect olduktan kaç saniye sonra tetiklensin?</p>
+              </div>
+            )}
             <div className="space-y-2"><Label>URL</Label><Input value={form.url} onChange={e => setForm(f => ({ ...f, url: e.target.value }))} placeholder="https://..." /></div>
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-2">
