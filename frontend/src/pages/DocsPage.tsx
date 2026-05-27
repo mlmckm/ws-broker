@@ -329,6 +329,207 @@ curl -X POST http://localhost:8883/api/acl \\
   -H 'Content-Type: application/json' \\
   -d '{"topic_pattern":"ev/#","action":"both","permission":"allow","priority":10}'`
 
+const ARDUINO_CODE = `/*
+ * WS Broker — Arduino IDE ESP32 Örneği
+ *
+ * Kütüphane Kurulumu (Arduino IDE > Tools > Manage Libraries):
+ *   - "ArduinoWebsockets" by Gil Maimon (v0.5.x)
+ *   - "ArduinoJson" by Benoit Blanchon (v7.x)
+ *
+ * Board: "ESP32 Dev Module" veya "DOIT ESP32 DEVKIT V1"
+ *
+ * Bağlantı URL'i (query param auth — ayrı auth mesajı gerekmez):
+ *   wss://broker.myensim.com/ws?username=KULLANICI&password=SIFRE
+ */
+
+#include <WiFi.h>
+#include <ArduinoWebsockets.h>
+#include <ArduinoJson.h>
+
+using namespace websockets;
+
+// ── WiFi Ayarları ─────────────────────────────────────
+const char* WIFI_SSID     = "WiFi-Adiniz";
+const char* WIFI_PASSWORD = "WiFi-Sifreniz";
+
+// ── Broker Ayarları ───────────────────────────────────
+const char* WS_HOST     = "broker.myensim.com";
+const int   WS_PORT     = 443;
+// Query param auth — bağlanırken otomatik doğrulama
+const char* WS_USERNAME = "esp32-cihaz";
+const char* WS_PASSWORD = "CihazSifresi";
+
+// Subscribe edilecek topic (komut alma için)
+const char* SUB_TOPIC   = "cihazlar/esp32-001/komut";
+
+// Sıcaklık yayınlanacak topic
+const char* PUB_TOPIC   = "cihazlar/esp32-001/sicaklik";
+
+// ── Global Değişkenler ────────────────────────────────
+WebsocketsClient ws;
+bool isAuthenticated = false;
+unsigned long lastPublish = 0;
+const unsigned long PUBLISH_INTERVAL = 10000; // 10 saniyede bir
+
+// ── Yardımcı: JSON mesaj gönder ───────────────────────
+void sendJson(JsonDocument& doc) {
+  String output;
+  serializeJson(doc, output);
+  ws.send(output);
+  Serial.println(">> " + output);
+}
+
+// ── Sıcaklık oku (gerçek sensör yerine simülasyon) ────
+float readTemperature() {
+  return 20.0 + (random(0, 100) / 10.0); // DHT22 için: dht.readTemperature()
+}
+
+// ── Topic'e abone ol ─────────────────────────────────
+void subscribeTopic(const char* topic) {
+  StaticJsonDocument<100> doc;
+  doc["type"]  = "subscribe";
+  doc["topic"] = topic;
+  sendJson(doc);
+}
+
+// ── Topic'e mesaj yayınla ────────────────────────────
+void publishMessage(const char* topic, const char* payload, bool retain = false) {
+  StaticJsonDocument<256> doc;
+  doc["type"]    = "publish";
+  doc["topic"]   = topic;
+  doc["payload"] = payload;
+  doc["retain"]  = retain;
+  sendJson(doc);
+}
+
+// ── Gelen mesaj işleyici ─────────────────────────────
+void onMessage(WebsocketsMessage message) {
+  String raw = message.data();
+  Serial.println("<< " + raw);
+
+  StaticJsonDocument<512> doc;
+  DeserializationError err = deserializeJson(doc, raw);
+  if (err) return;
+
+  const char* type = doc["type"];
+
+  if (strcmp(type, "auth_ok") == 0) {
+    // Query param auth ile bu da gelir
+    isAuthenticated = true;
+    Serial.println("[OK] Broker doğrulandı. Kullanıcı: " + String(doc["username"].as<const char*>()));
+    subscribeTopic(SUB_TOPIC);
+
+  } else if (strcmp(type, "auth_error") == 0) {
+    Serial.println("[HATA] Auth başarısız: " + String(doc["message"].as<const char*>()));
+
+  } else if (strcmp(type, "subscribed") == 0) {
+    Serial.println("[OK] Subscribe: " + String(doc["topic"].as<const char*>()));
+
+  } else if (strcmp(type, "message") == 0) {
+    // Komut geldi
+    const char* topic   = doc["topic"];
+    const char* payload = doc["payload"];
+    Serial.printf("[MSG] %s => %s\\n", topic, payload);
+
+    // Örnek: LED kontrolü
+    // if (strcmp(payload, "on") == 0)  digitalWrite(LED_PIN, HIGH);
+    // if (strcmp(payload, "off") == 0) digitalWrite(LED_PIN, LOW);
+
+  } else if (strcmp(type, "ping") == 0) {
+    // Ping'e pong yanıtla
+    StaticJsonDocument<32> pong;
+    pong["type"] = "pong";
+    sendJson(pong);
+
+  } else if (strcmp(type, "error") == 0) {
+    Serial.println("[HATA] " + String(doc["code"].as<const char*>()) +
+                   ": " + String(doc["message"].as<const char*>()));
+
+  } else if (strcmp(type, "server_shutdown") == 0) {
+    Serial.println("[WARN] Sunucu kapanıyor, yeniden bağlanılacak...");
+    isAuthenticated = false;
+  }
+}
+
+// ── Broker'a bağlan ──────────────────────────────────
+void connectBroker() {
+  Serial.println("[WS] Broker'a bağlanılıyor...");
+
+  // Query parametresi ile URL oluştur — ayrıca auth mesajı gerekmez!
+  String url = "wss://";
+  url += WS_HOST;
+  url += "/ws?username=";
+  url += WS_USERNAME;
+  url += "&password=";
+  url += WS_PASSWORD;
+
+  ws.onMessage(onMessage);
+  ws.onEvent([](WebsocketsEvent event, String data) {
+    if (event == WebsocketsEvent::ConnectionOpened) {
+      Serial.println("[WS] Bağlantı açıldı");
+    } else if (event == WebsocketsEvent::ConnectionClosed) {
+      Serial.println("[WS] Bağlantı kapandı — yeniden bağlanılacak");
+      isAuthenticated = false;
+    }
+  });
+
+  bool connected = ws.connect(WS_HOST, WS_PORT, url.c_str());
+  if (!connected) {
+    Serial.println("[WS] Bağlanamadı, 5s sonra tekrar denenecek");
+  }
+}
+
+// ── Setup ─────────────────────────────────────────────
+void setup() {
+  Serial.begin(115200);
+  delay(500);
+
+  // WiFi bağlantısı
+  Serial.printf("[WiFi] %s bağlanılıyor...\\n", WIFI_SSID);
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println();
+  Serial.println("[WiFi] Bağlandı! IP: " + WiFi.localIP().toString());
+
+  connectBroker();
+}
+
+// ── Loop ──────────────────────────────────────────────
+void loop() {
+  // WiFi kopmuşsa yeniden bağlan
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("[WiFi] Bağlantı koptu, yeniden bağlanıyor...");
+    WiFi.reconnect();
+    delay(5000);
+    return;
+  }
+
+  // WebSocket bağlı değilse yeniden bağlan
+  if (!ws.available()) {
+    static unsigned long lastRetry = 0;
+    if (millis() - lastRetry > 5000) {
+      lastRetry = millis();
+      isAuthenticated = false;
+      connectBroker();
+    }
+  }
+
+  // Periyodik sıcaklık gönder (her 10s)
+  if (isAuthenticated && millis() - lastPublish > PUBLISH_INTERVAL) {
+    lastPublish = millis();
+    float temp = readTemperature();
+    char payload[16];
+    dtostrf(temp, 1, 1, payload); // float → "23.5"
+    publishMessage(PUB_TOPIC, payload);
+    Serial.printf("[PUB] %s => %s\\n", PUB_TOPIC, payload);
+  }
+
+  ws.poll(); // WebSocket event loop — mutlaka çağrılmalı
+}`
+
 export default function DocsPage() {
   return (
     <div className="space-y-6">
@@ -340,7 +541,8 @@ export default function DocsPage() {
       <Tabs defaultValue="js">
         <TabsList className="flex-wrap h-auto">
           <TabsTrigger value="js">JavaScript</TabsTrigger>
-          <TabsTrigger value="esp32">ESP32</TabsTrigger>
+          <TabsTrigger value="arduino">Arduino IDE</TabsTrigger>
+          <TabsTrigger value="esp32">ESP32 (PlatformIO)</TabsTrigger>
           <TabsTrigger value="flutter">Flutter</TabsTrigger>
           <TabsTrigger value="python">Python</TabsTrigger>
           <TabsTrigger value="curl">HTTP / cURL</TabsTrigger>
@@ -352,6 +554,28 @@ export default function DocsPage() {
             <CardContent className="p-4">
               <p className="text-sm text-muted-foreground mb-4">Browser veya Node.js ile native WebSocket bağlantısı</p>
               <CodeBlock code={JS_CODE} />
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="arduino">
+          <Card>
+            <CardContent className="p-4">
+              <div className="flex flex-wrap gap-3 mb-4">
+                <div className="bg-blue-100 dark:bg-blue-900/30 text-blue-800 dark:text-blue-300 rounded-lg px-3 py-2 text-xs">
+                  <p className="font-bold mb-1">📦 Gerekli Kütüphaneler</p>
+                  <p>Arduino IDE → Tools → Manage Libraries</p>
+                  <p className="mt-1">• <strong>ArduinoWebsockets</strong> by Gil Maimon</p>
+                  <p>• <strong>ArduinoJson</strong> by Benoit Blanchon</p>
+                </div>
+                <div className="bg-green-100 dark:bg-green-900/30 text-green-800 dark:text-green-300 rounded-lg px-3 py-2 text-xs">
+                  <p className="font-bold mb-1">✅ Query Param Auth</p>
+                  <p>URL'e yazarak bağlanın:</p>
+                  <code className="text-xs">wss://broker.myensim.com/ws?username=xxx&password=yyy</code>
+                  <p className="mt-1">Ayrı auth mesajı göndermenize gerek yok!</p>
+                </div>
+              </div>
+              <CodeBlock code={ARDUINO_CODE} language="cpp" />
             </CardContent>
           </Card>
         </TabsContent>
@@ -397,7 +621,16 @@ export default function DocsPage() {
             <CardContent className="p-4 space-y-4">
               <div>
                 <h3 className="font-semibold mb-2">WebSocket Endpoint</h3>
-                <code className="text-sm bg-muted px-2 py-1 rounded">ws://sunucu:8883/ws</code>
+                <div className="space-y-2">
+                  <div>
+                    <p className="text-xs text-muted-foreground mb-1">Standart bağlantı (sonra auth mesajı gönderilir):</p>
+                    <code className="text-sm bg-muted px-2 py-1 rounded block">wss://broker.myensim.com/ws</code>
+                  </div>
+                  <div>
+                    <p className="text-xs text-muted-foreground mb-1">Query param ile direkt auth (Postman / Arduino için):</p>
+                    <code className="text-sm bg-muted px-2 py-1 rounded block">wss://broker.myensim.com/ws?username=KULLANICI&password=SIFRE</code>
+                  </div>
+                </div>
               </div>
               <div>
                 <h3 className="font-semibold mb-2">Mesaj Tipleri</h3>

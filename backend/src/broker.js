@@ -62,7 +62,7 @@ async function handleConnection(ws, req) {
   const userAgent = req.headers['user-agent'] || '';
   const clientId = uuidv4();
 
-  // IP blacklist check
+  // IP blacklist / whitelist check
   try {
     const blacklistRaw = await getSetting('ip_blacklist');
     const blacklist = JSON.parse(blacklistRaw || '[]');
@@ -101,7 +101,26 @@ async function handleConnection(ws, req) {
   };
 
   clients.set(clientId, client);
-  send(ws, { type: 'hello', client_id: clientId });
+
+  // ── URL query param auth (opsiyonel, Postman kolaylığı için) ────────────────
+  // wss://broker.myensim.com/ws?username=admin&password=xxx
+  try {
+    const url = new URL(req.url, 'http://localhost');
+    const qUser = url.searchParams.get('username');
+    const qPass = url.searchParams.get('password');
+    if (qUser && qPass) {
+      // Kimlik doğrulamayı hemen yap, hello+auth adımlarını atlat
+      await handleAuth(client, { username: qUser, password: qPass });
+      // Auth başarısıysa hello'yu göndermiyoruz (zaten auth_ok gönderildi)
+      if (!client.authenticated) return; // auth_error gönderildi ve ws kapandı
+      log(`Query-param auth: ${qUser} (${clientId})`);
+    } else {
+      send(ws, { type: 'hello', client_id: clientId });
+    }
+  } catch {
+    send(ws, { type: 'hello', client_id: clientId });
+  }
+
   log(`Client connected: ${clientId} from ${ip}`);
 
   ws.on('message', async (rawData) => {
