@@ -1,7 +1,9 @@
 import { useEffect, useState, useCallback } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { ArrowLeft, Save, TestTube2, Play, RotateCcw, ChevronDown, ChevronRight } from 'lucide-react'
+import { ArrowLeft, Save, Play, RotateCcw, ChevronDown, ChevronRight, Sparkles } from 'lucide-react'
 import Editor from '@monaco-editor/react'
+import '@/lib/monaco-setup'
+import { WEBHOOK_PRESETS, type WebhookPresetId } from '@/lib/webhookPresets'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -132,6 +134,26 @@ export default function WebhookEditPage() {
   const [showVars, setShowVars] = useState(false)
   const [useScript, setUseScript] = useState(false)
   const [useTemplates, setUseTemplates] = useState(false)
+  const [selectedPreset, setSelectedPreset] = useState<WebhookPresetId | ''>('')
+
+  const applyPreset = (presetId: WebhookPresetId) => {
+    const preset = WEBHOOK_PRESETS.find(p => p.id === presetId)
+    if (!preset) return
+    setSelectedPreset(presetId)
+    setUseScript(preset.useScript)
+    setUseTemplates(preset.useTemplates)
+    setForm(prev => ({
+      ...prev,
+      name: prev.name || preset.name,
+      topic_pattern: preset.topic_pattern,
+      body_template: preset.body_template ?? prev.body_template,
+      transform_script: preset.transform_script ?? prev.transform_script,
+    }))
+    toast({
+      title: 'Hazır ayar uygulandı',
+      description: preset.description,
+    })
+  }
 
   useEffect(() => {
     if (!isNew) fetchWebhook()
@@ -242,6 +264,38 @@ export default function WebhookEditPage() {
           </Button>
         )}
       </div>
+
+      {/* Hazır şablonlar — JS yazmadan */}
+      {isAdmin() && (
+        <Card className="border-primary/30 bg-primary/5">
+          <CardContent className="pt-4 pb-4">
+            <div className="flex flex-col sm:flex-row sm:items-center gap-3">
+              <div className="flex items-center gap-2 flex-shrink-0">
+                <Sparkles className="h-4 w-4 text-primary" />
+                <span className="text-sm font-medium">Hazır ayar (JS yazmanız gerekmez)</span>
+              </div>
+              <Select
+                value={selectedPreset || undefined}
+                onValueChange={v => applyPreset(v as WebhookPresetId)}
+              >
+                <SelectTrigger className="sm:max-w-md bg-background">
+                  <SelectValue placeholder="Bir hazır ayar seçin..." />
+                </SelectTrigger>
+                <SelectContent>
+                  {WEBHOOK_PRESETS.map(p => (
+                    <SelectItem key={p.id} value={p.id}>
+                      {p.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground sm:flex-1">
+                Öneri: n8n kullanıyorsanız <strong>Basit ilet (JS yok)</strong> seçin, URL&apos;nizi yazıp Kaydet&apos;e basın.
+              </p>
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
         {/* Sol kolon: Temel Ayarlar */}
@@ -412,9 +466,16 @@ export default function WebhookEditPage() {
             </CardHeader>
 
             <CardContent className="flex-1 flex flex-col gap-3 p-3">
+              {!useScript && (
+                <div className="rounded-lg border border-dashed bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+                  JS kapalı — sol tarafta <strong>Şablon Ayarları</strong> anahtarını açın veya yukarıdan hazır ayar seçin.
+                  Kod yazmanız gerekmez.
+                </div>
+              )}
               {/* Editor */}
               <div className="flex-1 border rounded-md overflow-hidden" style={{ minHeight: '320px' }}>
                 <Editor
+                  loading={<div className="flex items-center justify-center h-full text-sm text-muted-foreground">Editör yükleniyor...</div>}
                   height="100%"
                   defaultLanguage="javascript"
                   value={form.transform_script}
