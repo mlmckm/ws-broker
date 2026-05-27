@@ -6,6 +6,8 @@ import {
 import { cn } from '@/lib/utils'
 import { useAuthStore } from '@/store/authStore'
 import { Button } from '@/components/ui/button'
+import { BrandLogo } from '@/components/shared/BrandLogo'
+import { APP_NAME, LOGO_URL } from '@/lib/branding'
 
 const navItems = [
   { to: '/', icon: LayoutDashboard, label: 'Dashboard' },
@@ -40,13 +42,10 @@ export function Sidebar({ collapsed, onClose }: Props) {
       collapsed ? 'w-16' : 'w-56'
     )}>
       <div className="flex items-center justify-between p-4 border-b border-border">
-        {!collapsed && (
-          <div className="flex items-center gap-2">
-            <Radio className="h-5 w-5 text-primary" />
-            <span className="font-bold text-sm">WS Broker</span>
-          </div>
+        {!collapsed && <BrandLogo size="sm" />}
+        {collapsed && (
+          <img src={LOGO_URL} alt={APP_NAME} className="h-7 w-auto mx-auto object-contain" />
         )}
-        {collapsed && <Radio className="h-5 w-5 text-primary mx-auto" />}
         {onClose && (
           <Button variant="ghost" size="icon" onClick={onClose} className="lg:hidden">
             <X className="h-4 w-4" />
