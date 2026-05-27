@@ -2,7 +2,8 @@
 FROM node:20-alpine AS frontend-builder
 WORKDIR /frontend
 COPY frontend/package*.json ./
-RUN npm ci
+# NODE_ENV=development ensures devDependencies (tsc, vite) are installed
+RUN NODE_ENV=development npm ci
 COPY frontend/ .
 RUN npm run build
 
