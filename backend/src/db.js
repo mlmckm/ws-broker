@@ -79,6 +79,9 @@ async function migrate() {
       -- Add new columns if upgrading existing table
       ALTER TABLE webhooks ADD COLUMN IF NOT EXISTS trigger_on VARCHAR(30) DEFAULT 'message';
       ALTER TABLE webhooks ADD COLUMN IF NOT EXISTS delay_seconds INTEGER DEFAULT 0;
+      ALTER TABLE webhooks ADD COLUMN IF NOT EXISTS body_template TEXT;
+      ALTER TABLE webhooks ADD COLUMN IF NOT EXISTS url_template TEXT;
+      ALTER TABLE webhooks ADD COLUMN IF NOT EXISTS header_templates JSONB DEFAULT '{}';
       ALTER TABLE webhooks ALTER COLUMN topic_pattern DROP NOT NULL;
 
       CREATE TABLE IF NOT EXISTS webhook_logs (

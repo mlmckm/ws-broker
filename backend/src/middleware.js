@@ -37,6 +37,7 @@ function requireAdminOrViewer(req, res, next) {
   next();
 }
 
+// Login endpoint rate limiter
 const loginLimiter = rateLimit({
   windowMs: 60 * 1000,
   max: 10,
@@ -45,4 +46,18 @@ const loginLimiter = rateLimit({
   legacyHeaders: false,
 });
 
-module.exports = { authMiddleware, requireAdmin, requireAdminOrViewer, loginLimiter };
+// Genel API rate limiter (tüm /api/* endpoint'leri)
+const apiLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 300,  // dakikada 300 istek
+  message: { error: 'API rate limit aşıldı, lütfen bekleyin' },
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: (req) => {
+    // API key ile gelen istekleri sınırlama
+    const token = req.headers.authorization?.replace('Bearer ', '');
+    return token === process.env.API_KEY;
+  },
+});
+
+module.exports = { authMiddleware, requireAdmin, requireAdminOrViewer, loginLimiter, apiLimiter };

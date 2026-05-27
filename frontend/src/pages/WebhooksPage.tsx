@@ -22,6 +22,7 @@ interface Webhook {
   trigger_on: 'message' | 'client_connect' | 'client_disconnect'
   delay_seconds: number
   url: string
+  url_template?: string
   method: string
   active: boolean
   retry_count: number
@@ -31,6 +32,8 @@ interface Webhook {
   last_triggered_at: string
   last_status_code: number
   headers: Record<string, string>
+  header_templates?: Record<string, string>
+  body_template?: string
   secret: string
 }
 
@@ -43,7 +46,12 @@ interface WebhookLog {
   response_body: string
 }
 
-const emptyForm = { name: '', topic_pattern: '', trigger_on: 'message', delay_seconds: 0, url: '', method: 'POST', headers: '{}', secret: '', retry_count: 3, timeout_ms: 5000 }
+const emptyForm = {
+  name: '', topic_pattern: '', trigger_on: 'message', delay_seconds: 0,
+  url: '', url_template: '', method: 'POST',
+  headers: '{}', header_templates: '{}',
+  body_template: '', secret: '', retry_count: 3, timeout_ms: 5000,
+}
 
 export default function WebhooksPage() {
   const { isAdmin } = useAuthStore()
@@ -76,9 +84,13 @@ export default function WebhooksPage() {
     setEditing(wh)
     setForm({
       name: wh.name, topic_pattern: wh.topic_pattern || '', trigger_on: wh.trigger_on || 'message',
-      delay_seconds: wh.delay_seconds || 0, url: wh.url, method: wh.method,
-      headers: JSON.stringify(wh.headers || {}, null, 2), secret: wh.secret || '',
-      retry_count: wh.retry_count, timeout_ms: wh.timeout_ms,
+      delay_seconds: wh.delay_seconds || 0, url: wh.url,
+      url_template: wh.url_template || '',
+      method: wh.method,
+      headers: JSON.stringify(wh.headers || {}, null, 2),
+      header_templates: JSON.stringify(wh.header_templates || {}, null, 2),
+      body_template: wh.body_template || '',
+      secret: wh.secret || '', retry_count: wh.retry_count, timeout_ms: wh.timeout_ms,
     })
     setShowForm(true)
   }
@@ -87,10 +99,15 @@ export default function WebhooksPage() {
     try {
       let headers = {}
       try { headers = JSON.parse(form.headers) } catch {}
+      let header_templates = {}
+      try { header_templates = JSON.parse(form.header_templates) } catch {}
       const data = {
         ...form,
         headers,
+        header_templates,
         secret: form.secret || undefined,
+        body_template: form.body_template || undefined,
+        url_template: form.url_template || undefined,
         topic_pattern: form.trigger_on === 'message' ? form.topic_pattern : null,
       }
       if (editing) await api.put(`/webhooks/${editing.id}`, data)
@@ -262,7 +279,15 @@ export default function WebhooksPage() {
                 <p className="text-xs text-muted-foreground">Client disconnect olduktan kaç saniye sonra tetiklensin?</p>
               </div>
             )}
-            <div className="space-y-2"><Label>URL</Label><Input value={form.url} onChange={e => setForm(f => ({ ...f, url: e.target.value }))} placeholder="https://..." /></div>
+            <div className="space-y-2">
+              <Label>Hedef URL</Label>
+              <Input value={form.url} onChange={e => setForm(f => ({ ...f, url: e.target.value }))} placeholder="https://n8n.sirketim.com/webhook/abc" />
+              <p className="text-xs text-muted-foreground">Sabit URL. Değişken kullanmak için URL Şablonu alanını doldurun.</p>
+            </div>
+            <div className="space-y-2">
+              <Label>URL Şablonu <span className="text-muted-foreground">(opsiyonel — değişken kullanmak için)</span></Label>
+              <Input value={form.url_template} onChange={e => setForm(f => ({ ...f, url_template: e.target.value }))} placeholder="https://api.sirketim.com/sensor/{{topic_parts.2}}/data" />
+            </div>
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-2">
                 <Label>Method</Label>
@@ -278,8 +303,46 @@ export default function WebhooksPage() {
             </div>
             <div className="space-y-2"><Label>Timeout (ms)</Label><Input type="number" value={form.timeout_ms} onChange={e => setForm(f => ({ ...f, timeout_ms: parseInt(e.target.value) || 5000 }))} /></div>
             <div className="space-y-2">
-              <Label>Headers (JSON)</Label>
-              <textarea className="w-full h-20 font-mono text-xs p-2 border rounded bg-background" value={form.headers} onChange={e => setForm(f => ({ ...f, headers: e.target.value }))} />
+              <Label>Body Şablonu <span className="text-muted-foreground">(boşsa varsayılan gönderilir)</span></Label>
+              <textarea
+                className="w-full h-28 font-mono text-xs p-2 border rounded bg-background"
+                value={form.body_template}
+                onChange={e => setForm(f => ({ ...f, body_template: e.target.value }))}
+                placeholder={'{\n  "cihaz": "{{sender}}",\n  "deger": {{payload.temperature}},\n  "topic": "{{topic}}"\n}'}
+              />
+            </div>
+
+            {/* Değişken Referans Kılavuzu */}
+            <div className="bg-muted/50 rounded-lg p-3 text-xs space-y-1">
+              <p className="font-semibold mb-2">📋 Kullanılabilir Değişkenler</p>
+              <div className="grid grid-cols-2 gap-x-4 gap-y-0.5 font-mono">
+                {[
+                  ['{{topic}}', 'ev/salon/sicaklik'],
+                  ['{{topic_parts.0}}', 'ev'],
+                  ['{{topic_parts.1}}', 'salon'],
+                  ['{{payload}}', 'ham payload string'],
+                  ['{{payload.temperature}}', 'JSON alan'],
+                  ['{{payload.sensor.value}}', 'iç içe JSON'],
+                  ['{{sender}}', 'gönderen kullanıcı'],
+                  ['{{client_id}}', 'client UUID'],
+                  ['{{timestamp}}', 'ISO tarih/saat'],
+                  ['{{event}}', 'message/connect/disconnect'],
+                ].map(([v, d]) => (
+                  <div key={v} className="flex gap-2">
+                    <span className="text-primary">{v}</span>
+                    <span className="text-muted-foreground">→ {d}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <Label>Statik Headers (JSON)</Label>
+              <textarea className="w-full h-16 font-mono text-xs p-2 border rounded bg-background" value={form.headers} onChange={e => setForm(f => ({ ...f, headers: e.target.value }))} placeholder='{"X-Api-Key": "token123"}' />
+            </div>
+            <div className="space-y-2">
+              <Label>Dinamik Header Şablonları (JSON) <span className="text-muted-foreground">— değişken kullanabilirsiniz</span></Label>
+              <textarea className="w-full h-16 font-mono text-xs p-2 border rounded bg-background" value={form.header_templates} onChange={e => setForm(f => ({ ...f, header_templates: e.target.value }))} placeholder='{"X-Device": "{{sender}}", "X-Topic": "{{topic}}"}' />
             </div>
             <div className="space-y-2"><Label>Secret (HMAC imzalama, opsiyonel)</Label><Input value={form.secret} onChange={e => setForm(f => ({ ...f, secret: e.target.value }))} placeholder="gizli-anahtar" /></div>
           </div>

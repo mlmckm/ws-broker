@@ -19,6 +19,15 @@ const userConnectionCount = new Map();
 // rate limit per user: username -> { count, resetAt }
 const rateLimitMap = new Map();
 
+// WS auth brute-force koruması: ip -> { failures, blockedUntil }
+const authFailMap = new Map();
+const AUTH_FAIL_MAX    = 10;   // 10 başarısız deneme
+const AUTH_FAIL_WINDOW = 60000; // 1 dakikada
+const AUTH_BLOCK_MS    = 300000; // 5 dakika blok
+
+// Kimlik doğrulanmamış bağlantı timeout süresi (ms)
+const UNAUTH_TIMEOUT_MS = 30000; // 30 saniye içinde auth yapmazsa bağlantıyı kapat
+
 let pingInterval = null;
 let sysInterval = null;
 let startTime = Date.now();
@@ -102,6 +111,18 @@ async function handleConnection(ws, req) {
 
   clients.set(clientId, client);
 
+  // ── Unauthenticated bağlantı timeout ────────────────────────────────────────
+  // 30 saniye içinde auth yapılmazsa bağlantıyı kapat
+  const unauthTimer = setTimeout(() => {
+    if (!client.authenticated) {
+      log(`Unauthenticated timeout: ${clientId}`);
+      send(ws, { type: 'error', code: 'AUTH_TIMEOUT', message: '30 saniye içinde kimlik doğrulaması yapılmadı' });
+      ws.close();
+    }
+  }, UNAUTH_TIMEOUT_MS);
+  // Auth başarılı olursa timer'ı iptal et (handleAuth içinde set ediyoruz)
+  client.unauthTimer = unauthTimer;
+
   // ── URL query param auth (opsiyonel, Postman kolaylığı için) ────────────────
   // wss://broker.myensim.com/ws?username=admin&password=xxx
   try {
@@ -171,6 +192,16 @@ async function handleAuth(client, msg) {
     return;
   }
 
+  // ── IP bazlı brute-force kontrolü ───────────────────────────────────────────
+  const now = Date.now();
+  const failEntry = authFailMap.get(client.ip) || { failures: 0, blockedUntil: 0 };
+  if (failEntry.blockedUntil > now) {
+    const remaining = Math.ceil((failEntry.blockedUntil - now) / 1000);
+    send(client.ws, { type: 'auth_error', message: `Çok fazla başarısız deneme. ${remaining} saniye bekleyin.` });
+    client.ws.close();
+    return;
+  }
+
   const { username, password, keepalive } = msg;
   // keepalive: saniye cinsinden ping timeout (0 = devre dışı, undefined = global ayar kullan)
   if (!username || !password) {
@@ -182,7 +213,19 @@ async function handleAuth(client, msg) {
   const result = await pool.query('SELECT * FROM users WHERE username = $1', [username]);
   const user = result.rows[0];
 
+  const recordFailure = () => {
+    const entry = authFailMap.get(client.ip) || { failures: 0, blockedUntil: 0 };
+    entry.failures++;
+    if (entry.failures >= AUTH_FAIL_MAX) {
+      entry.blockedUntil = Date.now() + AUTH_BLOCK_MS;
+      entry.failures = 0;
+      log(`Auth brute-force block: ${client.ip} (${AUTH_BLOCK_MS / 1000}s)`);
+    }
+    authFailMap.set(client.ip, entry);
+  };
+
   if (!user) {
+    recordFailure();
     send(client.ws, { type: 'auth_error', message: 'Geçersiz kullanıcı adı veya şifre' });
     client.ws.close();
     return;
@@ -190,10 +233,14 @@ async function handleAuth(client, msg) {
 
   const valid = await verifyPassword(password, user.password_hash);
   if (!valid) {
+    recordFailure();
     send(client.ws, { type: 'auth_error', message: 'Geçersiz kullanıcı adı veya şifre' });
     client.ws.close();
     return;
   }
+
+  // Auth başarılı → IP hata sayacını sıfırla
+  authFailMap.delete(client.ip);
 
   // Check max connections per user
   const maxConns = parseInt(await getSetting('max_connections_per_user') || '10');
@@ -202,6 +249,12 @@ async function handleAuth(client, msg) {
     send(client.ws, { type: 'auth_error', message: 'Maksimum bağlantı sayısına ulaşıldı' });
     client.ws.close();
     return;
+  }
+
+  // Unauthenticated timeout'u iptal et
+  if (client.unauthTimer) {
+    clearTimeout(client.unauthTimer);
+    client.unauthTimer = null;
   }
 
   client.username = username;
@@ -487,6 +540,7 @@ function handleDisconnect(client) {
   if (!client.clientId || !clients.has(client.clientId)) return;
 
   clients.delete(client.clientId);
+  if (client.unauthTimer) { clearTimeout(client.unauthTimer); client.unauthTimer = null; }
   if (client.cleanupPing) client.cleanupPing(); else clearInterval(client.pingTimer);
 
   for (const topic of client.subscriptions) {

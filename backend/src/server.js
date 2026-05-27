@@ -1,8 +1,10 @@
 require('dotenv').config();
-require('express-async-errors'); // Must be required before express routes — patches Express 4 async error handling
+require('express-async-errors');
 const http = require('http');
 const path = require('path');
 const express = require('express');
+const helmet = require('helmet');
+const cors = require('cors');
 const { WebSocketServer } = require('ws');
 
 const { migrate } = require('./db');
@@ -14,6 +16,39 @@ const apiRouter = require('./api');
 const PORT = process.env.PORT || 8883;
 const app = express();
 
+// ── Güvenlik başlıkları ───────────────────────────────────────────────────────
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      scriptSrc:  ["'self'", "'unsafe-inline'", "'unsafe-eval'"],
+      styleSrc:   ["'self'", "'unsafe-inline'"],
+      imgSrc:     ["'self'", 'data:', 'blob:'],
+      connectSrc: ["'self'", 'wss:', 'ws:'],
+      fontSrc:    ["'self'"],
+    },
+  },
+  crossOriginEmbedderPolicy: false,
+}));
+
+// ── CORS ─────────────────────────────────────────────────────────────────────
+const allowedOrigins = (process.env.ALLOWED_ORIGINS || '')
+  .split(',').map(s => s.trim()).filter(Boolean);
+
+app.use(cors({
+  origin: (origin, cb) => {
+    // Same-origin veya origin yoksa (mobil, curl) izin ver
+    if (!origin) return cb(null, true);
+    // Eğer ALLOWED_ORIGINS tanımlandıysa kısıtla, yoksa herkese izin ver
+    if (allowedOrigins.length === 0 || allowedOrigins.includes(origin)) {
+      return cb(null, true);
+    }
+    cb(new Error('CORS: Bu origin izinli değil'));
+  },
+  credentials: true,
+}));
+
+// ── Body parsing ─────────────────────────────────────────────────────────────
 app.use(express.json({ limit: '1mb' }));
 
 // API routes

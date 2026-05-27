@@ -1,7 +1,11 @@
 const express = require('express');
 const { pool, getSettings, setSetting } = require('./db');
 const { hashPassword, verifyPassword, signToken } = require('./auth');
-const { authMiddleware, requireAdmin, requireAdminOrViewer, loginLimiter } = require('./middleware');
+const { authMiddleware, requireAdmin, requireAdminOrViewer, loginLimiter, apiLimiter } = require('./middleware');
+
+// Tüm API rotalarına genel rate limiter uygula
+const router = express.Router();
+router.use(apiLimiter);
 const { writeAudit } = require('./audit');
 const { loadAclCache, testAcl } = require('./acl');
 const { loadWebhookCache } = require('./webhook');
@@ -9,8 +13,6 @@ const {
   publishFromApi, kickClient, getActiveClients, getActiveTopics, deleteRetain,
   clients, subscriptions, retainedMessages, startTime,
 } = require('./broker');
-
-const router = express.Router();
 
 // ─── AUTH ────────────────────────────────────────────────────────────────────
 
@@ -332,7 +334,8 @@ router.get('/webhooks', authMiddleware, requireAdminOrViewer, async (req, res) =
 router.post('/webhooks', authMiddleware, requireAdmin, async (req, res) => {
   const ip = req.headers['x-forwarded-for']?.split(',')[0].trim() || req.socket.remoteAddress;
   const { name, topic_pattern, url, method = 'POST', headers = {}, secret,
-          retry_count = 3, timeout_ms = 5000, trigger_on = 'message', delay_seconds = 0 } = req.body;
+          retry_count = 3, timeout_ms = 5000, trigger_on = 'message', delay_seconds = 0,
+          body_template, url_template, header_templates } = req.body;
 
   if (!name || !url) return res.status(400).json({ error: 'name ve url gerekli' });
   if (!['message', 'client_connect', 'client_disconnect'].includes(trigger_on))
@@ -341,10 +344,12 @@ router.post('/webhooks', authMiddleware, requireAdmin, async (req, res) => {
     return res.status(400).json({ error: 'message tipinde topic_pattern gerekli' });
 
   const result = await pool.query(
-    `INSERT INTO webhooks (name, topic_pattern, url, method, headers, secret, retry_count, timeout_ms, trigger_on, delay_seconds)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *`,
+    `INSERT INTO webhooks (name, topic_pattern, url, method, headers, secret, retry_count, timeout_ms,
+     trigger_on, delay_seconds, body_template, url_template, header_templates)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) RETURNING *`,
     [name, topic_pattern || null, url, method, JSON.stringify(headers), secret || null,
-     retry_count, timeout_ms, trigger_on, delay_seconds]
+     retry_count, timeout_ms, trigger_on, delay_seconds,
+     body_template || null, url_template || null, JSON.stringify(header_templates || {})]
   );
   await loadWebhookCache();
   await writeAudit({ actor: req.user.username, action: 'webhook.create', targetType: 'webhook', targetId: result.rows[0].id, ip });
@@ -355,13 +360,16 @@ router.put('/webhooks/:id', authMiddleware, requireAdmin, async (req, res) => {
   const ip = req.headers['x-forwarded-for']?.split(',')[0].trim() || req.socket.remoteAddress;
   const { id } = req.params;
   const { name, topic_pattern, url, method, headers, secret, retry_count, timeout_ms,
-          trigger_on = 'message', delay_seconds = 0 } = req.body;
+          trigger_on = 'message', delay_seconds = 0,
+          body_template, url_template, header_templates } = req.body;
 
   const result = await pool.query(
     `UPDATE webhooks SET name=$1, topic_pattern=$2, url=$3, method=$4, headers=$5, secret=$6,
-     retry_count=$7, timeout_ms=$8, trigger_on=$9, delay_seconds=$10 WHERE id=$11 RETURNING *`,
+     retry_count=$7, timeout_ms=$8, trigger_on=$9, delay_seconds=$10,
+     body_template=$11, url_template=$12, header_templates=$13 WHERE id=$14 RETURNING *`,
     [name, topic_pattern || null, url, method, JSON.stringify(headers || {}), secret || null,
-     retry_count, timeout_ms, trigger_on, delay_seconds, id]
+     retry_count, timeout_ms, trigger_on, delay_seconds,
+     body_template || null, url_template || null, JSON.stringify(header_templates || {}), id]
   );
   if (!result.rows.length) return res.status(404).json({ error: 'Webhook bulunamadı' });
   await loadWebhookCache();

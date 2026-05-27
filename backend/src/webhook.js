@@ -3,6 +3,73 @@ const crypto = require('crypto');
 const { pool } = require('./db');
 const { topicMatchesPattern } = require('./acl');
 
+// ── Şablon Motoru ──────────────────────────────────────────────────────────
+// Kullanılabilir değişkenler:
+//   {{topic}}              → "ev/salon/sicaklik"
+//   {{topic_parts.0}}      → "ev"
+//   {{topic_parts.1}}      → "salon"
+//   {{payload}}            → ham payload string
+//   {{payload.field}}      → JSON payload içindeki alan (ör: {{payload.temperature}})
+//   {{payload.nested.key}} → iç içe JSON (ör: {{payload.sensor.value}})
+//   {{sender}}             → gönderen kullanıcı adı
+//   {{client_id}}          → gönderen client UUID
+//   {{timestamp}}          → ISO timestamp
+//   {{event}}              → "message" | "client_connect" | "client_disconnect"
+
+function buildTemplateContext(data) {
+  const { topic, payload, senderUsername, senderClientId, eventType, timestamp } = data;
+  const ctx = {
+    topic:     topic || '',
+    payload:   payload || '',
+    sender:    senderUsername || '',
+    client_id: senderClientId || '',
+    timestamp: timestamp || new Date().toISOString(),
+    event:     eventType || 'message',
+  };
+
+  // topic_parts
+  if (topic) {
+    topic.split('/').forEach((part, i) => {
+      ctx[`topic_parts.${i}`] = part;
+    });
+  }
+
+  // payload JSON alanları (iç içe destek)
+  if (payload) {
+    try {
+      const parsed = JSON.parse(payload);
+      flattenObject(parsed, 'payload', ctx);
+    } catch {}
+  }
+
+  return ctx;
+}
+
+function flattenObject(obj, prefix, result) {
+  if (obj === null || obj === undefined) return;
+  if (typeof obj !== 'object') {
+    result[prefix] = String(obj);
+    return;
+  }
+  for (const [key, val] of Object.entries(obj)) {
+    const path = `${prefix}.${key}`;
+    result[path] = val !== null && val !== undefined ? String(val) : '';
+    if (typeof val === 'object' && val !== null && !Array.isArray(val)) {
+      flattenObject(val, path, result);
+    }
+  }
+}
+
+function renderTemplate(template, ctx) {
+  if (!template) return template;
+  return template.replace(/\{\{([^}]+)\}\}/g, (match, key) => {
+    const trimmed = key.trim();
+    return Object.prototype.hasOwnProperty.call(ctx, trimmed)
+      ? ctx[trimmed]
+      : match; // bulunamazsa olduğu gibi bırak
+  });
+}
+
 let webhookCache = [];
 
 async function loadWebhookCache() {
@@ -44,20 +111,52 @@ async function triggerEventWebhooks(event, clientData) {
 }
 
 async function fireWebhook(webhook, { topic, payload, payloadType, senderUsername, senderClientId, eventType }, attempt = 1) {
-  const body = {
-    event: eventType || 'message',
-    topic: topic || undefined,
-    payload,
-    payload_type: payloadType,
-    sender_username: senderUsername,
-    sender_client_id: senderClientId,
-    timestamp: new Date().toISOString(),
-  };
+  const timestamp = new Date().toISOString();
 
-  const headers = { 'Content-Type': 'application/json', ...(webhook.headers || {}) };
+  // ── Şablon context oluştur ─────────────────────────────────────────────────
+  const ctx = buildTemplateContext({ topic, payload, senderUsername, senderClientId, eventType, timestamp });
+
+  // ── URL şablonu ────────────────────────────────────────────────────────────
+  const finalUrl = renderTemplate(webhook.url_template || webhook.url, ctx);
+
+  // ── Body oluştur ───────────────────────────────────────────────────────────
+  let body;
+  if (webhook.body_template) {
+    // Özel body şablonu var — render et
+    const rendered = renderTemplate(webhook.body_template, ctx);
+    try {
+      body = JSON.parse(rendered); // JSON ise parse et
+    } catch {
+      body = rendered; // plain text gönder
+    }
+  } else {
+    // Varsayılan body
+    body = {
+      event: eventType || 'message',
+      topic: topic || undefined,
+      payload,
+      payload_type: payloadType,
+      sender_username: senderUsername,
+      sender_client_id: senderClientId,
+      timestamp,
+    };
+  }
+
+  // ── Headers oluştur ────────────────────────────────────────────────────────
+  const baseHeaders = { 'Content-Type': 'application/json', ...(webhook.headers || {}) };
+
+  // Header şablonları varsa uygula
+  const headerTemplates = webhook.header_templates || {};
+  const renderedHeaders = {};
+  for (const [k, v] of Object.entries(headerTemplates)) {
+    renderedHeaders[k] = renderTemplate(v, ctx);
+  }
+
+  const headers = { ...baseHeaders, ...renderedHeaders };
 
   if (webhook.secret) {
-    const sig = crypto.createHmac('sha256', webhook.secret).update(JSON.stringify(body)).digest('hex');
+    const bodyStr = typeof body === 'string' ? body : JSON.stringify(body);
+    const sig = crypto.createHmac('sha256', webhook.secret).update(bodyStr).digest('hex');
     headers['X-Broker-Signature'] = `sha256=${sig}`;
   }
 
@@ -69,7 +168,7 @@ async function fireWebhook(webhook, { topic, payload, payloadType, senderUsernam
   try {
     const res = await axios({
       method: webhook.method || 'POST',
-      url: webhook.url,
+      url: finalUrl,
       data: body,
       headers,
       timeout: webhook.timeout_ms || 5000,

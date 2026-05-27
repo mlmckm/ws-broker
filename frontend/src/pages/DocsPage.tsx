@@ -533,9 +533,19 @@ void loop() {
 export default function DocsPage() {
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold">Docs</h1>
-        <p className="text-muted-foreground text-sm">Entegrasyon örnekleri ve protokol referansı</p>
+      <div className="flex items-start justify-between">
+        <div>
+          <h1 className="text-2xl font-bold">Docs</h1>
+          <p className="text-muted-foreground text-sm">Entegrasyon örnekleri ve protokol referansı</p>
+        </div>
+        <a
+          href="/API_DOCS.md"
+          target="_blank"
+          rel="noreferrer"
+          className="text-xs bg-muted hover:bg-accent px-3 py-1.5 rounded-md transition-colors flex items-center gap-1.5"
+        >
+          📄 Tam API Dokümantasyonu (.md)
+        </a>
       </div>
 
       <Tabs defaultValue="js">
