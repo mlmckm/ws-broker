@@ -129,10 +129,11 @@ async function handleConnection(ws, req) {
     const url = new URL(req.url, 'http://localhost');
     const qUser      = url.searchParams.get('username');
     const qPass      = url.searchParams.get('password');
-    const qKeepalive = url.searchParams.get('keepalive'); // opsiyonel: ?keepalive=0
+    const qKeepalive = url.searchParams.get('keepalive');
+    const qType      = url.searchParams.get('type'); // 'dashboard' → client listesinde gösterme
     if (qUser && qPass) {
-      // Kimlik doğrulamayı hemen yap, hello+auth adımlarını atlat
       const keepaliveVal = qKeepalive !== null ? parseInt(qKeepalive) : undefined;
+      client.isDashboard = (qType === 'dashboard');
       await handleAuth(client, { username: qUser, password: qPass, keepalive: keepaliveVal });
       // Auth başarısıysa hello'yu göndermiyoruz (zaten auth_ok gönderildi)
       if (!client.authenticated) return; // auth_error gönderildi ve ws kapandı
@@ -266,13 +267,15 @@ async function handleAuth(client, msg) {
   client.keepalive = (keepalive !== undefined) ? parseInt(keepalive) : undefined;
   userConnectionCount.set(username, (userConnectionCount.get(username) || 0) + 1);
 
-  // Store session
-  const sessionResult = await pool.query(
-    `INSERT INTO client_sessions (client_id, username, ip_address, user_agent)
-     VALUES ($1, $2, $3, $4) RETURNING id`,
-    [client.clientId, username, client.ip, client.userAgent]
-  );
-  client.sessionId = sessionResult.rows[0].id;
+  // Dashboard bağlantıları için session kaydı tutma
+  if (!client.isDashboard) {
+    const sessionResult = await pool.query(
+      `INSERT INTO client_sessions (client_id, username, ip_address, user_agent)
+       VALUES ($1, $2, $3, $4) RETURNING id`,
+      [client.clientId, username, client.ip, client.userAgent]
+    );
+    client.sessionId = sessionResult.rows[0].id;
+  }
 
   // Update last_seen
   await pool.query('UPDATE users SET last_seen = NOW() WHERE username = $1', [username]);
@@ -284,18 +287,16 @@ async function handleAuth(client, msg) {
   // Start ping (client.keepalive=0 ise ping yok; user-agent test aracıysa da yok)
   startPing(client);
 
-  const connectedPayload = {
-    client_id: client.clientId,
-    username,
-    ip: client.ip,
-    connected_at: new Date().toISOString(),
-  };
-
-  // Notify dashboard
-  publishSys('$SYS/clients/connected', connectedPayload);
-
-  // Trigger connect webhooks
-  triggerEventWebhooks('client_connect', connectedPayload).catch(() => {});
+  if (!client.isDashboard) {
+    const connectedPayload = {
+      client_id: client.clientId,
+      username,
+      ip: client.ip,
+      connected_at: new Date().toISOString(),
+    };
+    publishSys('$SYS/clients/connected', connectedPayload);
+    triggerEventWebhooks('client_connect', connectedPayload).catch(() => {});
+  }
 }
 
 // Test araçları — bu user-agent'lardan ping/pong beklenmez
@@ -557,7 +558,7 @@ function handleDisconnect(client) {
     pool.query('UPDATE client_sessions SET disconnected_at = NOW() WHERE id = $1', [client.sessionId]).catch(() => {});
   }
 
-  if (client.authenticated) {
+  if (client.authenticated && !client.isDashboard) {
     const disconnectedPayload = {
       client_id: client.clientId,
       username: client.username,
@@ -639,7 +640,7 @@ function kickClient(clientId) {
 
 function getActiveClients() {
   return Array.from(clients.values())
-    .filter(c => c.authenticated)
+    .filter(c => c.authenticated && !c.isDashboard)
     .map(c => ({
       client_id: c.clientId,
       username: c.username,

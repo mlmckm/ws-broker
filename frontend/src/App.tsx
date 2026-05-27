@@ -9,6 +9,7 @@ import TopicsPage from '@/pages/TopicsPage'
 import MessagesPage from '@/pages/MessagesPage'
 import AclPage from '@/pages/AclPage'
 import WebhooksPage from '@/pages/WebhooksPage'
+import WebhookEditPage from '@/pages/WebhookEditPage'
 import UsersPage from '@/pages/UsersPage'
 import AuditLogPage from '@/pages/AuditLogPage'
 import ApiTestPage from '@/pages/ApiTestPage'
@@ -33,6 +34,8 @@ export default function App() {
           <Route path="messages" element={<MessagesPage />} />
           <Route path="acl" element={<AclPage />} />
           <Route path="webhooks" element={<WebhooksPage />} />
+          <Route path="webhooks/new" element={<WebhookEditPage />} />
+          <Route path="webhooks/:id" element={<WebhookEditPage />} />
           <Route path="users" element={<UsersPage />} />
           <Route path="audit" element={<AuditLogPage />} />
           <Route path="api-test" element={<ApiTestPage />} />

@@ -22,16 +22,20 @@ export function useWebSocket() {
     if (wsInstance && wsInstance.readyState === WebSocket.OPEN) return
 
     setStatus('connecting')
-    const ws = new WebSocket(WS_URL)
+    // type=dashboard → broker client listesinde gösterme, keepalive=0 → ping/pong yok
+    const wsUrl = `${WS_URL}?username=${encodeURIComponent(username)}&password=${encodeURIComponent(wsPassword)}&type=dashboard&keepalive=0`
+    const ws = new WebSocket(wsUrl)
+    // wsUrl'i message handler'dan erişilebilir yap
+    ;(ws as WebSocket & { _wsUrl?: string })._wsUrl = wsUrl
     wsInstance = ws
 
     ws.onopen = () => {
       connectedRef.current = true
     }
 
-    ws.onmessage = (e) => {
+    ws.onmessage = (e: MessageEvent) => {
       try {
-        const msg = JSON.parse(e.data)
+        const msg = JSON.parse(e.data as string)
         handleMessage(msg, ws)
       } catch (err) {
         console.error('WS parse error', err)
@@ -60,7 +64,7 @@ export function useWebSocket() {
   const handleMessage = (msg: Record<string, unknown>, ws: WebSocket) => {
     switch (msg.type) {
       case 'hello':
-        ws.send(JSON.stringify({ type: 'auth', username, password: useAuthStore.getState().wsPassword }))
+        // Query param auth kullanıyoruz — hello'ya auth mesajı göndermeye gerek yok
         break
 
       case 'auth_ok':

@@ -82,6 +82,7 @@ async function migrate() {
       ALTER TABLE webhooks ADD COLUMN IF NOT EXISTS body_template TEXT;
       ALTER TABLE webhooks ADD COLUMN IF NOT EXISTS url_template TEXT;
       ALTER TABLE webhooks ADD COLUMN IF NOT EXISTS header_templates JSONB DEFAULT '{}';
+      ALTER TABLE webhooks ADD COLUMN IF NOT EXISTS transform_script TEXT;
       ALTER TABLE webhooks ALTER COLUMN topic_pattern DROP NOT NULL;
 
       CREATE TABLE IF NOT EXISTS webhook_logs (

@@ -1,7 +1,65 @@
 const axios = require('axios');
 const crypto = require('crypto');
+const vm = require('vm');
 const { pool } = require('./db');
 const { topicMatchesPattern } = require('./acl');
+
+// ── JS Transform Sandbox ───────────────────────────────────────────────────
+// Script şu context'e sahip olur:
+//   ctx     → { topic, payload, parsedPayload, sender, clientId, timestamp, event, topicParts }
+//   fetch   → async (url, options) → { status, data, headers }
+//   log     → console.log wrapper (script logları webhook log'una eklenir)
+//
+// Script şunu döndürmeli (async destekli):
+//   return { url?, headers?, body?, skip? }
+//   skip: true → bu webhook tetiklenmesin
+
+async function runTransformScript(script, context) {
+  const logs = [];
+  const sandbox = {
+    ctx: context,
+    fetch: async (url, opts = {}) => {
+      const res = await axios({
+        method: opts.method || 'GET',
+        url,
+        data: opts.body,
+        headers: opts.headers || {},
+        timeout: 4000,
+      });
+      return { status: res.status, data: res.data, headers: res.headers };
+    },
+    log: (...args) => logs.push(args.map(String).join(' ')),
+    JSON,
+    Math,
+    parseInt,
+    parseFloat,
+    String,
+    Number,
+    Boolean,
+    Array,
+    Object,
+    Date,
+    console: { log: (...args) => logs.push(args.map(String).join(' ')) },
+  };
+
+  vm.createContext(sandbox);
+
+  const wrappedScript = `
+    (async () => {
+      ${script}
+    })()
+  `;
+
+  try {
+    const result = await vm.runInContext(wrappedScript, sandbox, {
+      timeout: 5000,
+      displayErrors: true,
+    });
+    return { result, logs, error: null };
+  } catch (err) {
+    return { result: null, logs, error: err.message };
+  }
+}
 
 // ── Şablon Motoru ──────────────────────────────────────────────────────────
 // Kullanılabilir değişkenler:
@@ -117,7 +175,7 @@ async function fireWebhook(webhook, { topic, payload, payloadType, senderUsernam
   const ctx = buildTemplateContext({ topic, payload, senderUsername, senderClientId, eventType, timestamp });
 
   // ── URL şablonu ────────────────────────────────────────────────────────────
-  const finalUrl = renderTemplate(webhook.url_template || webhook.url, ctx);
+  let finalUrl = renderTemplate(webhook.url_template || webhook.url, ctx);
 
   // ── Body oluştur ───────────────────────────────────────────────────────────
   let body;
@@ -153,6 +211,38 @@ async function fireWebhook(webhook, { topic, payload, payloadType, senderUsernam
   }
 
   const headers = { ...baseHeaders, ...renderedHeaders };
+
+  // ── JS Transform Script (varsa) ──────────────────────────────────────────
+  if (webhook.transform_script) {
+    let parsedPayload = null;
+    try { parsedPayload = JSON.parse(payload); } catch {}
+
+    const { result, error } = await runTransformScript(webhook.transform_script, {
+      topic: topic || '',
+      payload: payload || '',
+      parsedPayload,
+      sender: senderUsername || '',
+      clientId: senderClientId || '',
+      timestamp,
+      event: eventType || 'message',
+      topicParts: (topic || '').split('/'),
+      // Mevcut render sonuçlarına da erişebilsin
+      renderedUrl: finalUrl,
+      renderedBody: body,
+    });
+
+    if (error) {
+      console.log(`[${new Date().toISOString()}] [WEBHOOK] Script error in "${webhook.name}": ${error}`);
+    } else if (result && typeof result === 'object') {
+      if (result.skip === true) {
+        log(`Webhook skipped by script: ${webhook.name}`);
+        return;
+      }
+      if (result.url !== undefined)     finalUrl = result.url;
+      if (result.body !== undefined)    body = result.body;
+      if (result.headers && typeof result.headers === 'object') Object.assign(headers, result.headers);
+    }
+  }
 
   if (webhook.secret) {
     const bodyStr = typeof body === 'string' ? body : JSON.stringify(body);
@@ -215,4 +305,4 @@ async function fireWebhook(webhook, { topic, payload, payloadType, senderUsernam
   console.log(`[${new Date().toISOString()}] [WEBHOOK] ${webhook.name} → ${statusCode} (${duration}ms) attempt=${attempt}`);
 }
 
-module.exports = { loadWebhookCache, triggerWebhooks, triggerEventWebhooks };
+module.exports = { loadWebhookCache, triggerWebhooks, triggerEventWebhooks, runTransformScript };

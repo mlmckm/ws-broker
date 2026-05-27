@@ -335,7 +335,7 @@ router.post('/webhooks', authMiddleware, requireAdmin, async (req, res) => {
   const ip = req.headers['x-forwarded-for']?.split(',')[0].trim() || req.socket.remoteAddress;
   const { name, topic_pattern, url, method = 'POST', headers = {}, secret,
           retry_count = 3, timeout_ms = 5000, trigger_on = 'message', delay_seconds = 0,
-          body_template, url_template, header_templates } = req.body;
+          body_template, url_template, header_templates, transform_script } = req.body;
 
   if (!name || !url) return res.status(400).json({ error: 'name ve url gerekli' });
   if (!['message', 'client_connect', 'client_disconnect'].includes(trigger_on))
@@ -345,11 +345,12 @@ router.post('/webhooks', authMiddleware, requireAdmin, async (req, res) => {
 
   const result = await pool.query(
     `INSERT INTO webhooks (name, topic_pattern, url, method, headers, secret, retry_count, timeout_ms,
-     trigger_on, delay_seconds, body_template, url_template, header_templates)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) RETURNING *`,
+     trigger_on, delay_seconds, body_template, url_template, header_templates, transform_script)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) RETURNING *`,
     [name, topic_pattern || null, url, method, JSON.stringify(headers), secret || null,
      retry_count, timeout_ms, trigger_on, delay_seconds,
-     body_template || null, url_template || null, JSON.stringify(header_templates || {})]
+     body_template || null, url_template || null, JSON.stringify(header_templates || {}),
+     transform_script || null]
   );
   await loadWebhookCache();
   await writeAudit({ actor: req.user.username, action: 'webhook.create', targetType: 'webhook', targetId: result.rows[0].id, ip });
@@ -361,15 +362,16 @@ router.put('/webhooks/:id', authMiddleware, requireAdmin, async (req, res) => {
   const { id } = req.params;
   const { name, topic_pattern, url, method, headers, secret, retry_count, timeout_ms,
           trigger_on = 'message', delay_seconds = 0,
-          body_template, url_template, header_templates } = req.body;
+          body_template, url_template, header_templates, transform_script } = req.body;
 
   const result = await pool.query(
     `UPDATE webhooks SET name=$1, topic_pattern=$2, url=$3, method=$4, headers=$5, secret=$6,
      retry_count=$7, timeout_ms=$8, trigger_on=$9, delay_seconds=$10,
-     body_template=$11, url_template=$12, header_templates=$13 WHERE id=$14 RETURNING *`,
+     body_template=$11, url_template=$12, header_templates=$13, transform_script=$14 WHERE id=$15 RETURNING *`,
     [name, topic_pattern || null, url, method, JSON.stringify(headers || {}), secret || null,
      retry_count, timeout_ms, trigger_on, delay_seconds,
-     body_template || null, url_template || null, JSON.stringify(header_templates || {}), id]
+     body_template || null, url_template || null, JSON.stringify(header_templates || {}),
+     transform_script || null, id]
   );
   if (!result.rows.length) return res.status(404).json({ error: 'Webhook bulunamadı' });
   await loadWebhookCache();
@@ -408,6 +410,25 @@ router.get('/webhooks/:id/logs', authMiddleware, requireAdminOrViewer, async (re
     [id, parseInt(limit)]
   );
   res.json({ logs: result.rows });
+});
+
+// Script test — kaydetmeden önce çalıştır
+router.post('/webhooks/test-script', authMiddleware, requireAdmin, async (req, res) => {
+  const { script, context } = req.body;
+  if (!script) return res.status(400).json({ error: 'script gerekli' });
+  const { runTransformScript } = require('./webhook');
+  const testCtx = {
+    topic: context?.topic || 'test/sensor/sicaklik',
+    payload: context?.payload || '{"temperature":23.5,"humidity":65}',
+    parsedPayload: (() => { try { return JSON.parse(context?.payload || '{"temperature":23.5}'); } catch { return null; } })(),
+    sender: context?.sender || 'esp32-test',
+    clientId: context?.clientId || 'test-uuid',
+    timestamp: new Date().toISOString(),
+    event: context?.event || 'message',
+    topicParts: (context?.topic || 'test/sensor/sicaklik').split('/'),
+  };
+  const { result, logs, error } = await runTransformScript(script, testCtx);
+  res.json({ result, logs, error, context: testCtx });
 });
 
 router.post('/webhooks/:id/test', authMiddleware, requireAdmin, async (req, res) => {
