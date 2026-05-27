@@ -14,8 +14,9 @@
 4. [ACL — Erişim Kontrolü](#acl--erişim-kontrolü)
 5. [Webhook Sistemi](#webhook-sistemi)
 6. [Rol Sistemi](#rol-sistemi)
-7. [Güvenlik](#güvenlik)
-8. [Hata Kodları](#hata-kodları)
+7. [Dashboard Dokümantasyon Sayfası](#dashboard-dokümantasyon-sayfası)
+8. [Güvenlik](#güvenlik)
+9. [Hata Kodları](#hata-kodları)
 
 ---
 
@@ -410,11 +411,24 @@ Yeni webhook oluştur.
   "body_template": "{ \"cihaz\": \"{{sender}}\", \"deger\": {{payload.temperature}}, \"topic\": \"{{topic}}\" }",
   "url_template": "",
   "header_templates": { "X-Device": "{{sender}}" },
+  "transform_script": "// opsiyonel JS (aşağıya bakın)",
   "secret": "hmac-anahtari",
   "retry_count": 3,
   "timeout_ms": 5000
 }
 ```
+
+**Dashboard — Hazır ayarlar (JS yazmadan):**
+
+Webhook oluşturma sayfasında (`/webhooks/new`) üstte **Hazır ayar** menüsü vardır:
+
+| Hazır ayar | JS | Açıklama |
+|------------|-----|----------|
+| Basit ilet (JS yok) | Kapalı | Her mesajı `{{topic}}`, `{{payload}}` ile n8n'e iletir |
+| Sıcaklık (JS yok, JSON payload) | Kapalı | `{{payload.temperature}}` ile JSON body |
+| Sıcaklık alarmı (>30°C, hazır JS) | Açık | 30°C altını göndermez, üstünü alarm olarak iletir |
+
+JS editöründe **Tam ekran** butonu ile tam ekran yazım modu açılır (`Esc` ile çıkılır).
 
 **trigger_on Değerleri:**
 
@@ -475,6 +489,99 @@ signature = hmac.new(secret.encode(), body.encode(), hashlib.sha256).hexdigest()
 #### GET `/webhooks/:id/logs?limit=50` — Çalışma logları
 
 #### POST `/webhooks/:id/test` — Test isteği gönder
+
+#### POST `/webhooks/test-script` — JS transform script test (admin)
+
+Scripti kaydetmeden sandbox'ta çalıştırır.
+
+```json
+{
+  "script": "const t = parseFloat(ctx.payload);\nreturn { skip: t < 30, body: { sicaklik: t } };",
+  "context": {
+    "topic": "ev/salon/sicaklik",
+    "payload": "35.2",
+    "parsedPayload": { "temperature": 35.2 },
+    "sender": "esp32-salon",
+    "clientId": "uuid",
+    "timestamp": "2026-05-27T12:00:00.000Z",
+    "event": "message",
+    "topicParts": ["ev", "salon", "sicaklik"]
+  }
+}
+```
+
+**Yanıt:**
+```json
+{
+  "result": { "body": { "sicaklik": 35.2 } },
+  "logs": ["..."],
+  "error": null
+}
+```
+
+---
+
+### JS Transform Script (opsiyonel)
+
+`transform_script` tanımlıysa, şablon render edildikten **sonra** script çalışır. Script async olabilir; en fazla **5 saniye** sürer.
+
+**Giriş — `ctx` objesi:**
+
+| Alan | Tip | Açıklama |
+|------|-----|----------|
+| `ctx.topic` | string | Tam topic |
+| `ctx.topicParts` | string[] | `topic.split('/')` |
+| `ctx.payload` | string | Ham payload |
+| `ctx.parsedPayload` | object \| null | JSON parse sonucu |
+| `ctx.sender` | string | Kullanıcı adı |
+| `ctx.clientId` | string | Client UUID |
+| `ctx.timestamp` | string | ISO zaman |
+| `ctx.event` | string | `message`, `client_connect`, `client_disconnect` |
+| `ctx.renderedUrl` | string | Şablon sonrası URL |
+| `ctx.renderedBody` | any | Şablon sonrası body |
+
+**Yardımcılar:** `fetch(url, { method, body, headers })`, `log(...)`, `JSON`, `Math`, `parseFloat`, vb.
+
+**Çıkış — dönüş objesi:**
+
+```javascript
+return {
+  skip: true,           // true → bu tetikleme atlanır
+  url: "https://...",   // URL override (opsiyonel)
+  body: { ... },        // Body override (opsiyonel)
+  headers: { ... },     // Header override (opsiyonel)
+};
+```
+
+**Örnek — sadece yüksek sıcaklık (hazır script ile aynı mantık):**
+
+```javascript
+const temp = ctx.parsedPayload?.temperature ?? parseFloat(ctx.payload);
+if (Number.isNaN(temp) || temp <= 30) return { skip: true };
+return {
+  body: {
+    alarm: 'HIGH_TEMP',
+    oda: ctx.topicParts[1],
+    cihaz: ctx.sender,
+    sicaklik: temp,
+    zaman: ctx.timestamp,
+  },
+};
+```
+
+**Örnek — dış API'den veri çekme:**
+
+```javascript
+const res = await fetch('https://api.sirket.com/oda/' + ctx.topicParts[1], {});
+return {
+  body: {
+    sicaklik: parseFloat(ctx.payload),
+    oda_adi: res.data?.name ?? ctx.topicParts[1],
+  },
+};
+```
+
+> `fetch` sandbox içinde çalışır; timeout 4 saniyedir. Üretimde script hataları webhook loglarına yazılır.
 
 ---
 
@@ -581,18 +688,28 @@ username: flutter-app    | topic: #           | action: subscribe | allow | prio
 ### Çalışma Akışı
 
 ```
-Mesaj gelir
+Mesaj / client event gelir
     ↓
-Topic pattern eşleşmesi kontrol edilir
+trigger_on + topic_pattern eşleşmesi
     ↓
-Body şablonu render edilir ({{değişken}} yerleştirilir)
+URL / body / header şablonları render ({{değişken}})
     ↓
-HTTP isteği atılır
+transform_script varsa → sandbox'ta JS çalışır (skip / url / body / headers override)
     ↓
-Başarısız? → Exponential backoff ile retry_count kadar tekrar
+secret varsa → HMAC-SHA256 imza (X-Broker-Signature)
+    ↓
+HTTP isteği (retry_count, timeout_ms)
     ↓
 webhook_logs tablosuna yazılır
 ```
+
+### JS olmadan kurulum (önerilen)
+
+1. Dashboard → Webhooks → Yeni Webhook
+2. **Hazır ayar** → `Basit ilet (JS yok)` veya `Sıcaklık (JS yok, JSON payload)`
+3. n8n URL'sini yapıştır → Kaydet
+
+Filtreleme (ör. sadece >30°C) gerekiyorsa hazır JS şablonunu seçin veya n8n tarafında filtreleyin.
 
 ### n8n Entegrasyonu Örneği
 
@@ -623,6 +740,17 @@ n8n'de `$json.sensor`, `$json.deger`, `$json.zaman` ile kullanabilirsiniz.
 - **admin:** Her şeyi yapabilir
 - **viewer:** Okuyabilir, değişiklik yapamaz (butonlar disabled)
 - **client:** Sadece WebSocket bağlantısı, dashboard'a giremez
+
+---
+
+## Dashboard Dokümantasyon Sayfası
+
+Sol menüden **Dokümantasyon** (`/docs`) ile bu dosyanın (`API_DOCS.md`) tamamı panel içinde okunabilir:
+
+- Markdown render (tablolar, kod blokları, başlıklar)
+- Sağda otomatik içindekiler (TOC)
+- ESP32, Arduino, Flutter, Postman örnek sekmeleri
+- Ham dosya: `https://broker.myensim.com/API_DOCS.md`
 
 ---
 

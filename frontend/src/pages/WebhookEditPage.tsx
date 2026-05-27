@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { ArrowLeft, Save, Play, RotateCcw, ChevronDown, ChevronRight, Sparkles } from 'lucide-react'
+import { ArrowLeft, Save, Play, RotateCcw, ChevronDown, ChevronRight, Sparkles, Maximize2, Minimize2, X } from 'lucide-react'
 import Editor from '@monaco-editor/react'
 import '@/lib/monaco-setup'
 import { WEBHOOK_PRESETS, type WebhookPresetId } from '@/lib/webhookPresets'
@@ -135,6 +135,20 @@ export default function WebhookEditPage() {
   const [useScript, setUseScript] = useState(false)
   const [useTemplates, setUseTemplates] = useState(false)
   const [selectedPreset, setSelectedPreset] = useState<WebhookPresetId | ''>('')
+  const [editorFullscreen, setEditorFullscreen] = useState(false)
+
+  useEffect(() => {
+    if (!editorFullscreen) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setEditorFullscreen(false)
+    }
+    document.body.style.overflow = 'hidden'
+    window.addEventListener('keydown', onKey)
+    return () => {
+      document.body.style.overflow = ''
+      window.removeEventListener('keydown', onKey)
+    }
+  }, [editorFullscreen])
 
   const applyPreset = (presetId: WebhookPresetId) => {
     const preset = WEBHOOK_PRESETS.find(p => p.id === presetId)
@@ -244,8 +258,113 @@ export default function WebhookEditPage() {
 
   const monacoTheme = theme === 'dark' ? 'vs-dark' : 'light'
 
+  const editorHeight = editorFullscreen ? 'calc(100vh - 11rem)' : '70vh'
+
+  const scriptEditorBlock = (fullscreen: boolean) => (
+    <>
+      <div className={fullscreen ? 'flex-1 min-h-0 border rounded-md overflow-hidden' : 'border rounded-md overflow-hidden'}>
+        <Editor
+          loading={<div className="flex items-center justify-center h-full text-sm text-muted-foreground">Editör yükleniyor...</div>}
+          height={editorHeight}
+          defaultLanguage="javascript"
+          value={form.transform_script}
+          onChange={v => f('transform_script', v || '')}
+          theme={monacoTheme}
+          options={{
+            fontSize: fullscreen ? 14 : 13,
+            minimap: { enabled: fullscreen },
+            lineNumbers: 'on',
+            wordWrap: 'on',
+            scrollBeyondLastLine: false,
+            readOnly: !isAdmin() || !useScript,
+            tabSize: 2,
+            automaticLayout: true,
+            suggest: { showKeywords: true },
+          }}
+        />
+      </div>
+
+      <div className={`border rounded-lg bg-muted/30 ${fullscreen ? 'flex-shrink-0 max-h-48 overflow-y-auto' : ''}`}>
+        <Tabs defaultValue="context">
+          <div className="flex items-center justify-between px-3 pt-2">
+            <TabsList className="h-7">
+              <TabsTrigger value="context" className="text-xs h-6">Test Context</TabsTrigger>
+              <TabsTrigger value="result" className="text-xs h-6">Sonuç</TabsTrigger>
+              <TabsTrigger value="vars" className="text-xs h-6">Değişkenler</TabsTrigger>
+            </TabsList>
+            <div className="flex gap-1">
+              <Button variant="ghost" size="sm" className="h-6 text-xs" onClick={() => f('transform_script', DEFAULT_SCRIPT)}>
+                <RotateCcw className="h-3 w-3 mr-1" />Sıfırla
+              </Button>
+              <Button size="sm" className="h-6 text-xs gap-1" onClick={handleTestScript} disabled={testRunning || !useScript}>
+                <Play className="h-3 w-3" />
+                {testRunning ? 'Çalışıyor...' : 'Çalıştır'}
+              </Button>
+            </div>
+          </div>
+
+          <TabsContent value="context" className="p-2 pt-1">
+            <p className="text-xs text-muted-foreground mb-1">Simüle edilecek giriş verisi (JSON):</p>
+            <div className="border rounded overflow-hidden" style={{ height: fullscreen ? '100px' : '120px' }}>
+              <Editor
+                height={fullscreen ? '100px' : '120px'}
+                defaultLanguage="json"
+                value={testContext}
+                onChange={v => setTestContext(v || '')}
+                theme={monacoTheme}
+                options={{ fontSize: 11, minimap: { enabled: false }, lineNumbers: 'off', scrollBeyondLastLine: false }}
+              />
+            </div>
+          </TabsContent>
+
+          <TabsContent value="result" className="p-2 pt-1">
+            {!scriptResult ? (
+              <p className="text-xs text-muted-foreground p-2">Scripti çalıştırın...</p>
+            ) : (
+              <div className="space-y-2">
+                {scriptResult.error && (
+                  <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded p-2 text-xs text-red-700 dark:text-red-300">
+                    ❌ {scriptResult.error}
+                  </div>
+                )}
+                {scriptResult.logs.length > 0 && (
+                  <div className="bg-muted rounded p-2 font-mono text-xs space-y-0.5">
+                    {scriptResult.logs.map((l, i) => <div key={i} className="text-muted-foreground">📋 {l}</div>)}
+                  </div>
+                )}
+                {scriptResult.result !== null && !scriptResult.error && (
+                  <div className="bg-green-50 dark:bg-green-900/20 rounded p-2">
+                    <p className="text-xs font-semibold text-green-700 dark:text-green-300 mb-1">✅ Sonuç (body/headers/url):</p>
+                    <pre className="text-xs font-mono text-green-800 dark:text-green-200 overflow-auto max-h-24">
+                      {JSON.stringify(scriptResult.result, null, 2)}
+                    </pre>
+                  </div>
+                )}
+                {scriptResult.result === null && !scriptResult.error && (
+                  <p className="text-xs text-muted-foreground">Script null döndürdü (varsayılan body kullanılacak)</p>
+                )}
+              </div>
+            )}
+          </TabsContent>
+
+          <TabsContent value="vars" className="p-2 pt-1">
+            <div className="grid grid-cols-1 gap-0.5 text-xs font-mono">
+              {TEMPLATE_VARS.map(([v, ex, desc]) => (
+                <div key={v} className="flex gap-2 py-0.5 hover:bg-muted/50 rounded px-1">
+                  <span className="text-primary w-44 flex-shrink-0">{v}</span>
+                  <span className="text-orange-500 dark:text-orange-400 w-28 flex-shrink-0">{ex}</span>
+                  <span className="text-muted-foreground">{desc}</span>
+                </div>
+              ))}
+            </div>
+          </TabsContent>
+        </Tabs>
+      </div>
+    </>
+  )
+
   return (
-    <div className="space-y-6 max-w-6xl">
+    <div className="space-y-6 w-full">
       {/* Header */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
@@ -297,10 +416,38 @@ export default function WebhookEditPage() {
         </Card>
       )}
 
-      <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
-        {/* Sol kolon: Temel Ayarlar */}
-        <div className="space-y-4">
+      {/* Tam ekran JS editörü */}
+      {editorFullscreen && useScript && (
+        <div className="fixed inset-0 z-[100] bg-background flex flex-col">
+          <div className="flex items-center justify-between border-b px-4 py-3 flex-shrink-0">
+            <div className="flex items-center gap-2">
+              <Button variant="ghost" size="icon" onClick={() => setEditorFullscreen(false)}>
+                <X className="h-4 w-4" />
+              </Button>
+              <span className="font-semibold">JS Transform — Tam Ekran</span>
+              <Badge variant="outline" className="text-xs">Esc ile çık</Badge>
+            </div>
+            <div className="flex items-center gap-2">
+              <Button variant="outline" size="sm" onClick={() => setEditorFullscreen(false)}>
+                <Minimize2 className="h-4 w-4 mr-1" /> Küçült
+              </Button>
+              {isAdmin() && (
+                <Button size="sm" onClick={handleSave} disabled={saving} className="gap-1">
+                  <Save className="h-4 w-4" /> {saving ? 'Kaydediliyor...' : 'Kaydet'}
+                </Button>
+              )}
+            </div>
+          </div>
+          <div className="flex-1 flex flex-col gap-3 p-4 min-h-0 overflow-hidden">
+            {scriptEditorBlock(true)}
+          </div>
+        </div>
+      )}
 
+      <div className={`grid grid-cols-1 gap-6 ${useScript ? '' : 'xl:grid-cols-2'}`}>
+        {/* Form alanları */}
+        <div className={useScript ? 'grid grid-cols-1 lg:grid-cols-2 gap-6' : 'space-y-4 xl:col-span-1'}>
+          <div className="space-y-4">
           {/* Temel Bilgiler */}
           <Card>
             <CardHeader className="pb-3">
@@ -382,7 +529,9 @@ export default function WebhookEditPage() {
               </div>
             </CardContent>
           </Card>
+          </div>
 
+          <div className="space-y-4">
           {/* Şablon / Template */}
           <Card>
             <CardHeader className="pb-2">
@@ -443,139 +592,60 @@ export default function WebhookEditPage() {
               </CardContent>
             )}
           </Card>
+          </div>
         </div>
 
-        {/* Sağ kolon: JS Transform */}
-        <div className="space-y-4">
-          <Card className="flex flex-col" style={{ minHeight: '600px' }}>
-            <CardHeader className="pb-2 flex-shrink-0">
+        {/* JS kapalıyken sağda bilgi kartı */}
+        {!useScript && (
+          <Card>
+            <CardHeader className="pb-2">
               <div className="flex items-center justify-between">
-                <div>
-                  <CardTitle className="text-sm flex items-center gap-2">
-                    <span>JS Transform Script</span>
-                    <Badge variant={useScript ? 'default' : 'secondary'} className="text-xs">
-                      {useScript ? 'Aktif' : 'Devre Dışı'}
-                    </Badge>
-                  </CardTitle>
-                  <p className="text-xs text-muted-foreground mt-0.5">
-                    Gelen veriyi işle, dış servis çağır, body/header/url özelleştir
-                  </p>
-                </div>
+                <CardTitle className="text-sm">JS Transform Script</CardTitle>
                 <Switch checked={useScript} onCheckedChange={setUseScript} disabled={!isAdmin()} />
               </div>
             </CardHeader>
-
-            <CardContent className="flex-1 flex flex-col gap-3 p-3">
-              {!useScript && (
-                <div className="rounded-lg border border-dashed bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
-                  JS kapalı — sol tarafta <strong>Şablon Ayarları</strong> anahtarını açın veya yukarıdan hazır ayar seçin.
-                  Kod yazmanız gerekmez.
-                </div>
-              )}
-              {/* Editor */}
-              <div className="flex-1 border rounded-md overflow-hidden" style={{ minHeight: '320px' }}>
-                <Editor
-                  loading={<div className="flex items-center justify-center h-full text-sm text-muted-foreground">Editör yükleniyor...</div>}
-                  height="100%"
-                  defaultLanguage="javascript"
-                  value={form.transform_script}
-                  onChange={v => f('transform_script', v || '')}
-                  theme={monacoTheme}
-                  options={{
-                    fontSize: 12,
-                    minimap: { enabled: false },
-                    lineNumbers: 'on',
-                    wordWrap: 'on',
-                    scrollBeyondLastLine: false,
-                    readOnly: !isAdmin() || !useScript,
-                    tabSize: 2,
-                    automaticLayout: true,
-                    suggest: { showKeywords: true },
-                  }}
-                />
-              </div>
-
-              {/* Test Panel */}
-              <div className="border rounded-lg bg-muted/30">
-                <Tabs defaultValue="context">
-                  <div className="flex items-center justify-between px-3 pt-2">
-                    <TabsList className="h-7">
-                      <TabsTrigger value="context" className="text-xs h-6">Test Context</TabsTrigger>
-                      <TabsTrigger value="result" className="text-xs h-6">Sonuç</TabsTrigger>
-                      <TabsTrigger value="vars" className="text-xs h-6">Değişkenler</TabsTrigger>
-                    </TabsList>
-                    <div className="flex gap-1">
-                      <Button variant="ghost" size="sm" className="h-6 text-xs" onClick={() => f('transform_script', DEFAULT_SCRIPT)}>
-                        <RotateCcw className="h-3 w-3 mr-1" />Sıfırla
-                      </Button>
-                      <Button size="sm" className="h-6 text-xs gap-1" onClick={handleTestScript} disabled={testRunning || !useScript}>
-                        <Play className="h-3 w-3" />
-                        {testRunning ? 'Çalışıyor...' : 'Çalıştır'}
-                      </Button>
-                    </div>
-                  </div>
-
-                  <TabsContent value="context" className="p-2 pt-1">
-                    <p className="text-xs text-muted-foreground mb-1">Simüle edilecek giriş verisi (JSON):</p>
-                    <div className="border rounded overflow-hidden" style={{ height: '120px' }}>
-                      <Editor
-                        height="120px"
-                        defaultLanguage="json"
-                        value={testContext}
-                        onChange={v => setTestContext(v || '')}
-                        theme={monacoTheme}
-                        options={{ fontSize: 11, minimap: { enabled: false }, lineNumbers: 'off', scrollBeyondLastLine: false }}
-                      />
-                    </div>
-                  </TabsContent>
-
-                  <TabsContent value="result" className="p-2 pt-1">
-                    {!scriptResult ? (
-                      <p className="text-xs text-muted-foreground p-2">Scripti çalıştırın...</p>
-                    ) : (
-                      <div className="space-y-2">
-                        {scriptResult.error && (
-                          <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded p-2 text-xs text-red-700 dark:text-red-300">
-                            ❌ {scriptResult.error}
-                          </div>
-                        )}
-                        {scriptResult.logs.length > 0 && (
-                          <div className="bg-muted rounded p-2 font-mono text-xs space-y-0.5">
-                            {scriptResult.logs.map((l, i) => <div key={i} className="text-muted-foreground">📋 {l}</div>)}
-                          </div>
-                        )}
-                        {scriptResult.result !== null && !scriptResult.error && (
-                          <div className="bg-green-50 dark:bg-green-900/20 rounded p-2">
-                            <p className="text-xs font-semibold text-green-700 dark:text-green-300 mb-1">✅ Sonuç (body/headers/url):</p>
-                            <pre className="text-xs font-mono text-green-800 dark:text-green-200 overflow-auto max-h-24">
-                              {JSON.stringify(scriptResult.result, null, 2)}
-                            </pre>
-                          </div>
-                        )}
-                        {scriptResult.result === null && !scriptResult.error && (
-                          <p className="text-xs text-muted-foreground">Script null döndürdü (varsayılan body kullanılacak)</p>
-                        )}
-                      </div>
-                    )}
-                  </TabsContent>
-
-                  <TabsContent value="vars" className="p-2 pt-1">
-                    <div className="grid grid-cols-1 gap-0.5 text-xs font-mono">
-                      {TEMPLATE_VARS.map(([v, ex, desc]) => (
-                        <div key={v} className="flex gap-2 py-0.5 hover:bg-muted/50 rounded px-1">
-                          <span className="text-primary w-44 flex-shrink-0">{v}</span>
-                          <span className="text-orange-500 dark:text-orange-400 w-28 flex-shrink-0">{ex}</span>
-                          <span className="text-muted-foreground">{desc}</span>
-                        </div>
-                      ))}
-                    </div>
-                  </TabsContent>
-                </Tabs>
-              </div>
+            <CardContent>
+              <p className="text-sm text-muted-foreground">
+                JS kapalı — <strong>Şablon Ayarları</strong> anahtarını açın veya yukarıdan hazır ayar seçin. Kod yazmanız gerekmez.
+              </p>
             </CardContent>
           </Card>
-        </div>
+        )}
       </div>
+
+      {/* JS açıkken tam genişlik editör */}
+      {useScript && !editorFullscreen && (
+        <Card className="flex flex-col w-full">
+          <CardHeader className="pb-2 flex-shrink-0">
+            <div className="flex items-center justify-between">
+              <div>
+                <CardTitle className="text-sm flex items-center gap-2">
+                  <span>JS Transform Script</span>
+                  <Badge variant="default" className="text-xs">Aktif</Badge>
+                </CardTitle>
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  Gelen veriyi işle, dış servis çağır, body/header/url özelleştir
+                </p>
+              </div>
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-8 gap-1"
+                  onClick={() => setEditorFullscreen(true)}
+                >
+                  <Maximize2 className="h-4 w-4" />
+                  Tam ekran
+                </Button>
+                <Switch checked={useScript} onCheckedChange={setUseScript} disabled={!isAdmin()} />
+              </div>
+            </div>
+          </CardHeader>
+          <CardContent className="flex flex-col gap-3 p-3">
+            {scriptEditorBlock(false)}
+          </CardContent>
+        </Card>
+      )}
     </div>
   )
 }
