@@ -16,7 +16,7 @@ export function BrandLogo({ showName = true, size = 'md', className }: Props) {
       <img
         src={LOGO_URL}
         alt={APP_NAME}
-        className={cn(heights[size], 'w-auto max-w-[140px] object-contain flex-shrink-0')}
+        className={cn(heights[size], 'w-auto max-w-[200px] object-contain flex-shrink-0')}
       />
       {showName && (
         <span className={cn('font-bold truncate', textSizes[size])}>{APP_NAME}</span>
