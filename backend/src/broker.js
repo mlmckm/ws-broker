@@ -106,11 +106,13 @@ async function handleConnection(ws, req) {
   // wss://broker.myensim.com/ws?username=admin&password=xxx
   try {
     const url = new URL(req.url, 'http://localhost');
-    const qUser = url.searchParams.get('username');
-    const qPass = url.searchParams.get('password');
+    const qUser      = url.searchParams.get('username');
+    const qPass      = url.searchParams.get('password');
+    const qKeepalive = url.searchParams.get('keepalive'); // opsiyonel: ?keepalive=0
     if (qUser && qPass) {
       // Kimlik doğrulamayı hemen yap, hello+auth adımlarını atlat
-      await handleAuth(client, { username: qUser, password: qPass });
+      const keepaliveVal = qKeepalive !== null ? parseInt(qKeepalive) : undefined;
+      await handleAuth(client, { username: qUser, password: qPass, keepalive: keepaliveVal });
       // Auth başarısıysa hello'yu göndermiyoruz (zaten auth_ok gönderildi)
       if (!client.authenticated) return; // auth_error gönderildi ve ws kapandı
       log(`Query-param auth: ${qUser} (${clientId})`);
@@ -169,7 +171,8 @@ async function handleAuth(client, msg) {
     return;
   }
 
-  const { username, password } = msg;
+  const { username, password, keepalive } = msg;
+  // keepalive: saniye cinsinden ping timeout (0 = devre dışı, undefined = global ayar kullan)
   if (!username || !password) {
     send(client.ws, { type: 'auth_error', message: 'Kullanıcı adı ve şifre gerekli' });
     client.ws.close();
@@ -204,6 +207,10 @@ async function handleAuth(client, msg) {
   client.username = username;
   client.role = user.role;
   client.authenticated = true;
+  // keepalive: client'ın istediği ping timeout (saniye)
+  // keepalive=0 → ping/pong devre dışı (Postman, test araçları için)
+  // keepalive=undefined → global settings'ten oku
+  client.keepalive = (keepalive !== undefined) ? parseInt(keepalive) : undefined;
   userConnectionCount.set(username, (userConnectionCount.get(username) || 0) + 1);
 
   // Store session
@@ -221,7 +228,7 @@ async function handleAuth(client, msg) {
   send(client.ws, { type: 'auth_ok', token, username, role: user.role });
   log(`Auth OK: ${username} (${client.clientId})`);
 
-  // Start ping
+  // Start ping (client.keepalive=0 ise ping yok; user-agent test aracıysa da yok)
   startPing(client);
 
   const connectedPayload = {
@@ -238,10 +245,42 @@ async function handleAuth(client, msg) {
   triggerEventWebhooks('client_connect', connectedPayload).catch(() => {});
 }
 
+// Test araçları — bu user-agent'lardan ping/pong beklenmez
+const TEST_AGENT_PATTERNS = [
+  'postman', 'insomnia', 'hoppscotch', 'curl', 'python-websockets',
+  'node-fetch', 'go-http-client', 'thunderclient',
+];
+
+function isTestAgent(userAgent = '') {
+  const ua = userAgent.toLowerCase();
+  return TEST_AGENT_PATTERNS.some(p => ua.includes(p));
+}
+
 async function startPing(client) {
-  // Read from settings — allows runtime tuning without restart
-  const intervalMs = parseInt(await getSetting('ws_ping_interval') || '30000');
-  const timeoutMs  = parseInt(await getSetting('ws_ping_timeout')  || '60000');
+  // ── Ping/pong devre dışı bırakma koşulları ──────────────────────────────
+  // 1. Client keepalive=0 gönderdi
+  if (client.keepalive === 0) {
+    log(`Ping devre dışı (keepalive=0): ${client.clientId}`);
+    return;
+  }
+
+  // 2. Postman, Insomnia gibi test araçları → ping yok
+  if (isTestAgent(client.userAgent)) {
+    log(`Ping devre dışı (test aracı: "${client.userAgent}"): ${client.clientId}`);
+    return;
+  }
+
+  // ── Timeout süreleri ────────────────────────────────────────────────────
+  // client.keepalive (saniye) varsa kullan, yoksa global settings'ten oku
+  let intervalMs, timeoutMs;
+  if (client.keepalive !== undefined && client.keepalive > 0) {
+    intervalMs = client.keepalive * 1000;
+    timeoutMs  = Math.min(client.keepalive * 1000, 30000); // max 30s timeout
+  } else {
+    intervalMs = parseInt(await getSetting('ws_ping_interval') || '30000');
+    timeoutMs  = parseInt(await getSetting('ws_ping_timeout')  || '60000');
+  }
+
   const PING_INTERVAL = intervalMs;
   const PONG_TIMEOUT  = timeoutMs;
 
